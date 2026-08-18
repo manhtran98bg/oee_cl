@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.0" />
+    <PackageReference Include="Npgsql" Version="10.0.3" />
+    <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" Version="2.1.12" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Rostek.Gateway.Application\Rostek.Gateway.Application.csproj" />
+    <ProjectReference Include="..\Rostek.Gateway.Domain\Rostek.Gateway.Domain.csproj" />
+    <ProjectReference Include="..\Rostek.Gateway.Contracts\Rostek.Gateway.Contracts.csproj" />
+  </ItemGroup>
+</Project>

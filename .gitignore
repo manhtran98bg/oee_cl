@@ -1,0 +1,13 @@
+.dotnet/
+.idea/
+.vs/
+*.DotSettings.user
+bin/
+obj/
+data/
+backups/
+exports/
+logs/
+TestResults/
+tool/
+tests/

@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.8" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.8" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.8" />
+    <PackageReference Include="NModbus" Version="3.0.83" />
+    <PackageReference Include="OPCFoundation.NetStandard.Opc.Ua" Version="1.5.378.156" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Rostek.Gateway.Contracts\Rostek.Gateway.Contracts.csproj" />
+    <ProjectReference Include="..\Rostek.Gateway.Domain\Rostek.Gateway.Domain.csproj" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,15 @@
+@page "{version:long}"
+@model Rostek.Gateway.Host.Pages.Configuration.VersionModel
+@{
+    ViewData["Title"] = "Configuration Version";
+}
+<h1 class="h3">Version @Model.Version</h1>
+<form method="post" class="mb-3">
+    <button class="btn btn-warning" type="submit">Rollback To This Version</button>
+    <a class="btn btn-secondary" asp-page="History">Back</a>
+</form>
+@if (Model.Message is not null)
+{
+    <div class="alert alert-info">@Model.Message</div>
+}
+<pre class="bg-light p-3">@Model.Json</pre>

@@ -1,0 +1,51 @@
+@page "{id:guid}"
+@model Rostek.Gateway.Host.Pages.Machines.OverridesModel
+@{
+    ViewData["Title"] = "Signal Overrides";
+}
+<h1 class="h3">Signal Overrides</h1>
+@if (!Model.TemplateSignals.Any())
+{
+    <div class="alert alert-warning">
+        This machine's template does not have any signals yet.
+        <a asp-page="/MachineTemplates/Signals" asp-route-id="@Model.TemplateId">Add template signals</a>.
+    </div>
+}
+<table class="table table-sm table-striped">
+    <thead><tr><th>Signal</th><th>Template Address</th><th>Type</th><th>Required</th><th>Enabled</th><th></th></tr></thead>
+    <tbody>
+    @foreach (var signal in Model.TemplateSignals)
+    {
+        <tr>
+            <td>@signal.SignalCode</td>
+            <td>@signal.SourceAddress</td>
+            <td>@signal.DataType</td>
+            <td>@signal.Required</td>
+            <td>@signal.Enabled</td>
+            <td>
+                <form method="post" asp-page-handler="Reset" class="d-inline">
+                    <input type="hidden" name="templateSignalId" value="@signal.Id" />
+                    <button class="btn btn-link btn-sm" type="submit">Reset</button>
+                </form>
+            </td>
+        </tr>
+    }
+    </tbody>
+</table>
+<h2 class="h5 mt-4">Set Override</h2>
+<form method="post" class="row g-3">
+    <input asp-for="Input.MachineId" type="hidden" />
+    <div class="col-md-3"><label class="form-label">Template Signal</label><select asp-for="Input.TemplateSignalId" asp-items="Model.SignalOptions" class="form-select"></select></div>
+    <div class="col-md-4"><label class="form-label">Override Address</label><input asp-for="Input.SourceAddress" class="form-control" /></div>
+    <div class="col-md-2"><label class="form-label">Data Type</label><select asp-for="Input.DataType" asp-items="Html.GetEnumSelectList<SignalDataType>()" class="form-select"><option value="">Template</option></select></div>
+    <div class="col-md-1"><label class="form-label">Enabled</label><select asp-for="Input.Enabled" class="form-select"><option value="">Template</option><option value="true">True</option><option value="false">False</option></select></div>
+    <div class="col-md-2"><label class="form-label">Sampling ms</label><input asp-for="Input.SamplingIntervalMs" class="form-control" /></div>
+    @if (!string.IsNullOrWhiteSpace(Model.ErrorMessage))
+    {
+        <div class="col-12 text-danger">@Model.ErrorMessage</div>
+    }
+    <div class="col-12">
+        <button class="btn btn-primary" type="submit">Save Override</button>
+        <a class="btn btn-secondary" asp-page="Edit" asp-route-id="@Model.Input.MachineId">Back</a>
+    </div>
+</form>

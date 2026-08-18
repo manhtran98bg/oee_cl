@@ -1,0 +1,22 @@
+@page
+@model Rostek.Gateway.Host.Pages.Configuration.HistoryModel
+@{
+    ViewData["Title"] = "Configuration History";
+}
+<h1 class="h3">Configuration History</h1>
+<table class="table table-sm table-striped">
+    <thead><tr><th>Version</th><th>Status</th><th>Applied</th><th>Checksum</th><th>Description</th><th></th></tr></thead>
+    <tbody>
+    @foreach (var version in Model.Versions)
+    {
+        <tr>
+            <td>@version.Version</td>
+            <td>@version.Status</td>
+            <td>@version.AppliedAtUtc</td>
+            <td><code>@version.Checksum</code></td>
+            <td>@version.Description</td>
+            <td><a asp-page="Version" asp-route-version="@version.Version">Open</a></td>
+        </tr>
+    }
+    </tbody>
+</table>

@@ -1,0 +1,25 @@
+@page "{id:guid?}"
+@model Rostek.Gateway.Host.Pages.MachineTemplates.EditModel
+@{
+    ViewData["Title"] = "Machine Template";
+}
+<h1 class="h3">Machine Template</h1>
+<form method="post" class="row g-3">
+    <input asp-for="Input.Id" type="hidden" />
+    <div class="col-md-3"><label class="form-label">Code</label><input asp-for="Input.Code" class="form-control" /></div>
+    <div class="col-md-5"><label class="form-label">Name</label><input asp-for="Input.Name" class="form-control" /></div>
+    <div class="col-md-2"><label class="form-label">Protocol</label><select asp-for="Input.Protocol" asp-items="Html.GetEnumSelectList<GatewayProtocol>()" class="form-select"></select></div>
+    <div class="col-md-2"><label class="form-label">Polling ms</label><input asp-for="Input.DefaultPollingIntervalMs" class="form-control" /></div>
+    <div class="col-md-3"><label class="form-label">Manufacturer</label><input asp-for="Input.Manufacturer" class="form-control" /></div>
+    <div class="col-md-3"><label class="form-label">Model</label><input asp-for="Input.Model" class="form-control" /></div>
+    <div class="col-md-2 form-check mt-5"><input asp-for="Input.Enabled" class="form-check-input" /><label class="form-check-label">Enabled</label></div>
+    <div class="col-12"><label class="form-label">Description</label><textarea asp-for="Input.Description" class="form-control"></textarea></div>
+    @if (!string.IsNullOrWhiteSpace(Model.ErrorMessage))
+    {
+        <div class="col-12 text-danger">@Model.ErrorMessage</div>
+    }
+    <div class="col-12">
+        <button class="btn btn-primary" type="submit">Save</button>
+        <a class="btn btn-secondary" asp-page="Index">Cancel</a>
+    </div>
+</form>

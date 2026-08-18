@@ -1,0 +1,58 @@
+@page "{id:guid}"
+@model Rostek.Gateway.Host.Pages.MachineTemplates.SignalsModel
+@{
+    ViewData["Title"] = "Template Signals";
+}
+<h1 class="h3">Template Signals</h1>
+<table class="table table-sm table-striped">
+    <thead><tr><th>Code</th><th>Name</th><th>Address</th><th>Type</th><th>Required</th><th>Enabled</th><th></th></tr></thead>
+    <tbody>
+    @foreach (var signal in Model.Signals)
+    {
+        <tr>
+            <td>@signal.SignalCode</td>
+            <td>@signal.DisplayName</td>
+            <td>@signal.SourceAddress</td>
+            <td>@signal.DataType</td>
+            <td>@signal.Required</td>
+            <td>@signal.Enabled</td>
+            <td>
+                <a class="btn btn-link btn-sm" asp-page="Signals" asp-route-id="@Model.Input.TemplateId" asp-route-signalId="@signal.Id">Edit</a>
+                <form method="post" asp-page-handler="Delete" class="d-inline">
+                    <input type="hidden" name="signalId" value="@signal.Id" />
+                    <button class="btn btn-link btn-sm" type="submit">Delete</button>
+                </form>
+            </td>
+        </tr>
+    }
+    </tbody>
+</table>
+<h2 class="h5 mt-4">@Model.FormTitle</h2>
+<form method="post" class="row g-3">
+    <input asp-for="Input.Id" type="hidden" />
+    <input asp-for="Input.TemplateId" type="hidden" />
+    <div class="col-md-2"><label class="form-label">Code</label><input asp-for="Input.SignalCode" class="form-control" /></div>
+    <div class="col-md-2"><label class="form-label">Name</label><input asp-for="Input.DisplayName" class="form-control" /></div>
+    <div class="col-md-3"><label class="form-label">Address</label><input asp-for="Input.SourceAddress" class="form-control" /></div>
+    <div class="col-md-2"><label class="form-label">Type</label><select asp-for="Input.DataType" asp-items="Html.GetEnumSelectList<SignalDataType>()" class="form-select"></select></div>
+    <div class="col-md-1 form-check mt-5"><input asp-for="Input.Required" class="form-check-input" /><label class="form-check-label">Required</label></div>
+    <div class="col-md-1 form-check mt-5"><input asp-for="Input.Enabled" class="form-check-input" /><label class="form-check-label">Enabled</label></div>
+    <div class="col-md-1"><label class="form-label">Order</label><input asp-for="Input.DisplayOrder" class="form-control" /></div>
+    <div class="col-md-2"><label class="form-label">Sampling ms</label><input asp-for="Input.SamplingIntervalMs" class="form-control" /></div>
+    <div class="col-md-2"><label class="form-label">Scale</label><input asp-for="Input.ScalingFactor" class="form-control" /></div>
+    <div class="col-md-2"><label class="form-label">Offset</label><input asp-for="Input.ScalingOffset" class="form-control" /></div>
+    <div class="col-md-3"><label class="form-label">Value Map JSON</label><input asp-for="Input.ValueMappingJson" class="form-control" /></div>
+    <div class="col-md-3"><label class="form-label">Options JSON</label><input asp-for="Input.OptionsJson" class="form-control" /></div>
+    @if (!string.IsNullOrWhiteSpace(Model.ErrorMessage))
+    {
+        <div class="col-12 text-danger">@Model.ErrorMessage</div>
+    }
+    <div class="col-12">
+        <button class="btn btn-primary" type="submit">Save Signal</button>
+        @if (Model.IsEditing)
+        {
+            <a class="btn btn-outline-secondary" asp-page="Signals" asp-route-id="@Model.Input.TemplateId">Cancel Edit</a>
+        }
+        <a class="btn btn-secondary" asp-page="Index">Back</a>
+    </div>
+</form>

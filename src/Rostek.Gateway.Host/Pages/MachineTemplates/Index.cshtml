@@ -1,0 +1,29 @@
+@page
+@model Rostek.Gateway.Host.Pages.MachineTemplates.IndexModel
+@{
+    ViewData["Title"] = "Machine Templates";
+}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h3">Machine Templates</h1>
+    <a class="btn btn-primary" asp-page="Edit">New Template</a>
+</div>
+<table class="table table-sm table-striped">
+    <thead><tr><th>Code</th><th>Name</th><th>Protocol</th><th>Signals</th><th>Enabled</th><th></th></tr></thead>
+    <tbody>
+    @foreach (var template in Model.Templates)
+    {
+        <tr>
+            <td>@template.Code</td>
+            <td>@template.Name</td>
+            <td>@template.Protocol</td>
+            <td>@template.SignalCount</td>
+            <td>@template.Enabled</td>
+            <td>
+                <a asp-page="Edit" asp-route-id="@template.Id">Edit</a>
+                <span> | </span>
+                <a asp-page="Signals" asp-route-id="@template.Id">Signals</a>
+            </td>
+        </tr>
+    }
+    </tbody>
+</table>

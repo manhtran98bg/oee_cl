@@ -1,0 +1,37 @@
+@page
+@model Rostek.Gateway.Host.Pages.Configuration.IndexModel
+@{
+    ViewData["Title"] = "Configuration";
+}
+<h1 class="h3">Configuration</h1>
+<div class="mb-3">
+    <form method="post" asp-page-handler="Validate" class="d-inline"><button class="btn btn-secondary" type="submit">Validate Draft</button></form>
+    <form method="post" asp-page-handler="Apply" class="d-inline ms-2">
+        <input name="description" class="form-control d-inline-block w-auto" placeholder="Apply description" />
+        <button class="btn btn-primary" type="submit">Apply Draft</button>
+    </form>
+    <a class="btn btn-outline-secondary ms-2" asp-page="History">History</a>
+    <a class="btn btn-outline-secondary ms-2" asp-page="Import">Import</a>
+    <a class="btn btn-outline-secondary ms-2" asp-page="Export">Export</a>
+</div>
+@if (Model.ApplyMessage is not null)
+{
+    <div class="alert @(Model.ApplySucceeded ? "alert-success" : "alert-danger")">@Model.ApplyMessage</div>
+}
+@if (Model.Validation is not null)
+{
+    <h2 class="h5">Validation</h2>
+    <table class="table table-sm">
+        <thead><tr><th>Severity</th><th>Code</th><th>Machine</th><th>Signal</th><th>Field</th><th>Message</th></tr></thead>
+        <tbody>
+        @foreach (var issue in Model.Validation.Issues)
+        {
+            <tr><td>@issue.Severity</td><td>@issue.Code</td><td>@issue.MachineCode</td><td>@issue.SignalCode</td><td>@issue.Field</td><td>@issue.Message</td></tr>
+        }
+        </tbody>
+    </table>
+    @if (!Model.Validation.Issues.Any())
+    {
+        <p class="text-success">Draft is valid.</p>
+    }
+}

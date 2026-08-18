@@ -1,0 +1,32 @@
+@page
+@model Rostek.Gateway.Host.Pages.Configuration.ImportModel
+@{
+    ViewData["Title"] = "Import Configuration";
+}
+<h1 class="h3">Import CSV Machines</h1>
+<form method="post" class="row g-3">
+    <div class="col-12"><label class="form-label">CSV</label><textarea asp-for="Csv" class="form-control" rows="10"></textarea></div>
+    <div class="col-md-3 form-check ms-2"><input asp-for="CreateMissingGroups" class="form-check-input" /><label class="form-check-label">Create missing groups</label></div>
+    <div class="col-md-3 form-check"><input asp-for="UpdateExisting" class="form-check-input" /><label class="form-check-label">Update existing machines</label></div>
+    <div class="col-12">
+        <button class="btn btn-secondary" type="submit" asp-page-handler="Preview">Preview</button>
+        <button class="btn btn-primary" type="submit" asp-page-handler="Commit">Commit</button>
+    </div>
+</form>
+@if (Model.Preview is not null)
+{
+    <h2 class="h5 mt-4">Preview</h2>
+    @foreach (var error in Model.Preview.Errors)
+    {
+        <div class="text-danger">@error</div>
+    }
+    <table class="table table-sm">
+        <thead><tr><th>Action</th><th>Type</th><th>Code</th><th>Message</th></tr></thead>
+        <tbody>
+        @foreach (var item in Model.Preview.Items)
+        {
+            <tr><td>@item.Action</td><td>@item.EntityType</td><td>@item.Code</td><td>@item.Message</td></tr>
+        }
+        </tbody>
+    </table>
+}

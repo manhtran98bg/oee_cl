@@ -1,0 +1,403 @@
+@page
+@model IndexModel
+@{
+    ViewData["Title"] = "Dashboard";
+}
+
+<style>
+    .dashboard-summary-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(10rem, 1fr));
+        gap: .875rem;
+    }
+
+    .dashboard-summary-tile {
+        display: flex;
+        align-items: center;
+        gap: .875rem;
+        min-height: 5rem;
+        padding: .875rem 1rem;
+        border: 1px solid #d8dee8;
+        border-radius: .5rem;
+        background: #fff;
+        box-shadow: 0 .25rem 1rem rgba(15, 23, 42, .06);
+    }
+
+    .dashboard-summary-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 2.5rem;
+        height: 2.5rem;
+        flex: 0 0 2.5rem;
+        border-radius: .5rem;
+    }
+
+    .dashboard-summary-label {
+        color: #667085;
+        font-size: .78rem;
+        font-weight: 700;
+        letter-spacing: .02em;
+        text-transform: uppercase;
+    }
+
+    .dashboard-summary-value {
+        color: #111827;
+        font-size: 1.85rem;
+        font-weight: 750;
+        line-height: 1.1;
+    }
+
+    .summary-machines .dashboard-summary-icon {
+        color: #1d4ed8;
+        background: #dbeafe;
+    }
+
+    .summary-enabled .dashboard-summary-icon {
+        color: #047857;
+        background: #d1fae5;
+    }
+
+    .summary-online .dashboard-summary-icon {
+        color: #0f766e;
+        background: #ccfbf1;
+    }
+
+    .summary-offline .dashboard-summary-icon {
+        color: #b91c1c;
+        background: #fee2e2;
+    }
+
+    @@media (max-width: 991.98px) {
+        .dashboard-summary-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+    }
+
+    @@media (max-width: 575.98px) {
+        .dashboard-summary-grid {
+            grid-template-columns: 1fr;
+        }
+    }
+</style>
+
+<div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+    <div>
+        <h1 class="h3 mb-1">Dashboard</h1>
+        <div class="text-muted small">Status</div>
+    </div>
+    <div class="d-flex align-items-center gap-2">
+        <span id="dashboardUpdateState" class="small text-muted">Ready</span>
+    </div>
+</div>
+
+<div class="dashboard-summary-grid mb-3" id="dashboardSummary">
+    <div class="dashboard-summary-tile summary-machines">
+        @* <div class="dashboard-summary-icon" aria-hidden="true">@RenderMachinesIcon()</div> *@
+        <div>
+            <div class="dashboard-summary-label">Machines</div>
+            <div class="dashboard-summary-value" data-summary="total">@Model.Dashboard.Summary.Total</div>
+        </div>
+    </div>
+    <div class="dashboard-summary-tile summary-enabled">
+        @* <div class="dashboard-summary-icon" aria-hidden="true">@RenderPowerIcon()</div> *@
+        <div>
+            <div class="dashboard-summary-label">Enable</div>
+            <div class="dashboard-summary-value" data-summary="enabled">@Model.Dashboard.Summary.Enabled</div>
+        </div>
+    </div>
+    <div class="dashboard-summary-tile summary-online">
+        @* <div class="dashboard-summary-icon" aria-hidden="true">@RenderLinkIcon()</div> *@
+        <div>
+            <div class="dashboard-summary-label">Online</div>
+            <div class="dashboard-summary-value" data-summary="online">@Model.Dashboard.Summary.Online</div>
+        </div>
+    </div>
+    <div class="dashboard-summary-tile summary-offline">
+        @* <div class="dashboard-summary-icon" aria-hidden="true">@RenderAlertIcon()</div> *@
+        <div>
+            <div class="dashboard-summary-label">Offline</div>
+            <div class="dashboard-summary-value" data-summary="offline">@Model.Dashboard.Summary.Offline</div>
+        </div>
+    </div>
+</div>
+
+<div class="border rounded">
+    <div class="table-responsive">
+        <table class="table table-sm table-hover align-middle mb-0">
+            <thead class="table-light">
+            <tr>
+                <th class="text-center" style="width: 2.75rem;"></th>
+                <th>Code</th>
+                <th>Name</th>
+                <th>Protocol</th>
+                <th>Enabled</th>
+                <th>Connection</th>
+                <th>Runtime State</th>
+                <th>Signals</th>
+                <th>Last Update</th>
+                <th>Message</th>
+            </tr>
+            </thead>
+            <tbody id="machineDashboardRows">
+            @foreach (var machine in Model.Dashboard.Machines)
+            {
+                <tr>
+                    <td class="text-center">
+                        <button class="btn btn-outline-secondary btn-sm dashboard-expand-button" type="button" data-machine-code="@machine.MachineCode" aria-label="Toggle signals for @machine.MachineCode">+</button>
+                    </td>
+                    <td class="fw-semibold">@machine.MachineCode</td>
+                    <td>@machine.MachineName</td>
+                    <td><span class="badge text-bg-light">@machine.Protocol</span></td>
+                    <td>@RenderEnabled(machine.Enabled)</td>
+                    <td class="font-monospace small">@machine.Connection</td>
+                    <td>@RenderRuntimeState(machine.RuntimeState, machine.Online)</td>
+                    <td>@RenderSignalSummary(machine.SignalCount, machine.GoodSignalCount, machine.BadSignalCount)</td>
+                    <td class="small text-muted">@FormatDate(machine.UpdatedAtUtc)</td>
+                    <td class="small">@machine.Message</td>
+                </tr>
+            }
+            </tbody>
+        </table>
+    </div>
+</div>
+
+@functions {
+    private static Microsoft.AspNetCore.Html.IHtmlContent RenderMachinesIcon() =>
+        new Microsoft.AspNetCore.Html.HtmlString("<svg width=\"22\" height=\"22\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"3\" y=\"9\" width=\"18\" height=\"11\" rx=\"2\"/><path d=\"M7 9V5h10v4\"/><path d=\"M8 14h.01\"/><path d=\"M12 14h.01\"/><path d=\"M16 14h.01\"/></svg>");
+
+    private static Microsoft.AspNetCore.Html.IHtmlContent RenderPowerIcon() =>
+        new Microsoft.AspNetCore.Html.HtmlString("<svg width=\"22\" height=\"22\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M12 2v10\"/><path d=\"M18.4 6.6a9 9 0 1 1-12.8 0\"/></svg>");
+
+    private static Microsoft.AspNetCore.Html.IHtmlContent RenderLinkIcon() =>
+        new Microsoft.AspNetCore.Html.HtmlString("<svg width=\"22\" height=\"22\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M10 13a5 5 0 0 0 7.1 0l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1\"/><path d=\"M14 11a5 5 0 0 0-7.1 0l-2 2A5 5 0 0 0 12 20.1l1.1-1.1\"/></svg>");
+
+    private static Microsoft.AspNetCore.Html.IHtmlContent RenderAlertIcon() =>
+        new Microsoft.AspNetCore.Html.HtmlString("<svg width=\"22\" height=\"22\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z\"/><path d=\"M12 9v4\"/><path d=\"M12 17h.01\"/></svg>");
+
+    private static string FormatDate(DateTimeOffset? value) =>
+        value?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "-";
+
+    private static Microsoft.AspNetCore.Html.IHtmlContent RenderEnabled(bool enabled)
+    {
+        var css = enabled ? "text-bg-success" : "text-bg-secondary";
+        var text = enabled ? "Enabled" : "Disabled";
+        return new Microsoft.AspNetCore.Html.HtmlString($"<span class=\"badge {css}\">{text}</span>");
+    }
+
+    private static Microsoft.AspNetCore.Html.IHtmlContent RenderRuntimeState(string state, bool online)
+    {
+        var css = GetRuntimeBadgeClass(state, online);
+        return new Microsoft.AspNetCore.Html.HtmlString($"<span class=\"badge {css}\">{System.Net.WebUtility.HtmlEncode(state)}</span>");
+    }
+
+    private static Microsoft.AspNetCore.Html.IHtmlContent RenderSignalSummary(int total, int good, int bad)
+    {
+        if (total == 0)
+        {
+            return new Microsoft.AspNetCore.Html.HtmlString("<span class=\"badge text-bg-secondary\">0 signals</span>");
+        }
+
+        var css = bad > 0 ? "text-bg-warning" : "text-bg-success";
+        return new Microsoft.AspNetCore.Html.HtmlString($"<span class=\"badge {css}\">{good} good / {bad} bad</span>");
+    }
+
+    private static string GetRuntimeBadgeClass(string state, bool online) =>
+        online
+            ? "text-bg-success"
+            : state switch
+            {
+                "Connected" => "text-bg-danger",
+                "Starting" or "Connecting" or "Reconnecting" => "text-bg-warning",
+                "Degraded" => "text-bg-warning",
+                "Faulted" => "text-bg-danger",
+                "Disabled" or "Stopped" or "Stopping" or "NotStarted" => "text-bg-secondary",
+                _ => "text-bg-light"
+            };
+}
+
+@section Scripts {
+    <script>
+        const dashboardState = document.getElementById('dashboardUpdateState');
+        const machineRows = document.getElementById('machineDashboardRows');
+        const expandedMachines = new Set();
+        const summaryMap = {
+            total: document.querySelector('[data-summary="total"]'),
+            enabled: document.querySelector('[data-summary="enabled"]'),
+            online: document.querySelector('[data-summary="online"]'),
+            offline: document.querySelector('[data-summary="offline"]')
+        };
+
+        function badge(text, css) {
+            return `<span class="badge ${css}">${escapeHtml(text)}</span>`;
+        }
+
+        function runtimeBadge(state, online) {
+            if (online) {
+                return badge(state, 'text-bg-success');
+            }
+
+            const css = {
+                Connected: 'text-bg-danger',
+                Starting: 'text-bg-warning',
+                Connecting: 'text-bg-warning',
+                Reconnecting: 'text-bg-warning',
+                Degraded: 'text-bg-warning',
+                Faulted: 'text-bg-danger',
+                Disabled: 'text-bg-secondary',
+                Stopped: 'text-bg-secondary',
+                Stopping: 'text-bg-secondary',
+                NotStarted: 'text-bg-secondary'
+            }[state] || 'text-bg-light';
+            return badge(state, css);
+        }
+
+        function enabledBadge(enabled) {
+            return badge(enabled ? 'Enabled' : 'Disabled', enabled ? 'text-bg-success' : 'text-bg-secondary');
+        }
+
+        function qualityBadge(quality) {
+            const css = {
+                Good: 'text-bg-success',
+                Timeout: 'text-bg-warning',
+                Bad: 'text-bg-danger',
+                Disconnected: 'text-bg-secondary',
+                ConfigError: 'text-bg-danger'
+            }[quality] || 'text-bg-light';
+            return badge(quality, css);
+        }
+
+        function signalSummary(machine) {
+            if (!machine.signalCount) {
+                return badge('0 signals', 'text-bg-secondary');
+            }
+
+            const css = machine.badSignalCount > 0 ? 'text-bg-warning' : 'text-bg-success';
+            return badge(`${machine.goodSignalCount} good / ${machine.badSignalCount} bad`, css);
+        }
+
+        function formatDate(value) {
+            if (!value) {
+                return '-';
+            }
+
+            return new Date(value).toLocaleString();
+        }
+
+        function escapeHtml(value) {
+            return String(value ?? '').replace(/[&<>"']/g, character => ({
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#039;'
+            }[character]));
+        }
+
+        function renderSignalRows(machine) {
+            if (!expandedMachines.has(machine.machineCode)) {
+                return '';
+            }
+
+            const content = machine.signals.length === 0
+                ? '<div class="text-muted small px-2 py-2">No signal values have been published yet.</div>'
+                : `
+                    <div class="table-responsive">
+                        <table class="table table-sm align-middle mb-0">
+                            <thead>
+                            <tr>
+                                <th>Signal</th>
+                                <th>Value</th>
+                                <th>Data Type</th>
+                                <th>Quality</th>
+                                <th>Last Read</th>
+                                <th>Error</th>
+                            </tr>
+                            </thead>
+                            <tbody>
+                            ${machine.signals.map(signal => `
+                                <tr>
+                                    <td class="fw-semibold">${escapeHtml(signal.signalCode)}</td>
+                                    <td class="font-monospace">${escapeHtml(signal.value)}</td>
+                                    <td>${escapeHtml(signal.dataType)}</td>
+                                    <td>${qualityBadge(signal.quality)}</td>
+                                    <td class="small text-muted">${escapeHtml(formatDate(signal.lastReadUtc))}</td>
+                                    <td class="small text-muted">${escapeHtml(signal.error || '-')}</td>
+                                </tr>
+                            `).join('')}
+                            </tbody>
+                        </table>
+                    </div>`;
+
+            return `
+                <tr class="table-light">
+                    <td></td>
+                    <td colspan="9" class="p-2">${content}</td>
+                </tr>`;
+        }
+
+        function renderMachineRow(machine) {
+            const expanded = expandedMachines.has(machine.machineCode);
+            return `
+                <tr>
+                    <td class="text-center">
+                        <button class="btn btn-outline-secondary btn-sm dashboard-expand-button" type="button" data-machine-code="${escapeHtml(machine.machineCode)}" aria-label="Toggle signals for ${escapeHtml(machine.machineCode)}">${expanded ? '-' : '+'}</button>
+                    </td>
+                    <td class="fw-semibold">${escapeHtml(machine.machineCode)}</td>
+                    <td>${escapeHtml(machine.machineName)}</td>
+                    <td>${badge(machine.protocol, 'text-bg-light')}</td>
+                    <td>${enabledBadge(machine.enabled)}</td>
+                    <td class="font-monospace small">${escapeHtml(machine.connection)}</td>
+                    <td>${runtimeBadge(machine.runtimeState, machine.online)}</td>
+                    <td>${signalSummary(machine)}</td>
+                    <td class="small text-muted">${escapeHtml(formatDate(machine.updatedAtUtc))}</td>
+                    <td class="small">${escapeHtml(machine.message)}</td>
+                </tr>
+                ${renderSignalRows(machine)}
+            `;
+        }
+
+        function renderDashboard(data) {
+            summaryMap.total.textContent = data.summary.total;
+            summaryMap.enabled.textContent = data.summary.enabled;
+            summaryMap.online.textContent = data.summary.online;
+            summaryMap.offline.textContent = data.summary.offline;
+
+            machineRows.innerHTML = data.machines.map(renderMachineRow).join('');
+        }
+
+        machineRows.addEventListener('click', event => {
+            const button = event.target.closest('.dashboard-expand-button');
+            if (!button) {
+                return;
+            }
+
+            const machineCode = button.dataset.machineCode;
+            if (expandedMachines.has(machineCode)) {
+                expandedMachines.delete(machineCode);
+            } else {
+                expandedMachines.add(machineCode);
+            }
+
+            refreshDashboard();
+        });
+
+        async function refreshDashboard() {
+            try {
+                const response = await fetch('/api/v1/dashboard', { headers: { Accept: 'application/json' } });
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+
+                renderDashboard(await response.json());
+                dashboardState.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+                dashboardState.className = 'small text-muted';
+            } catch {
+                dashboardState.textContent = 'Dashboard update failed';
+                dashboardState.className = 'small text-danger';
+            }
+        }
+
+        window.setInterval(refreshDashboard, 3000);
+    </script>
+}

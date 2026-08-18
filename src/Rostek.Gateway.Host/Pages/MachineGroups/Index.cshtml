@@ -1,0 +1,24 @@
+@page
+@model Rostek.Gateway.Host.Pages.MachineGroups.IndexModel
+@{
+    ViewData["Title"] = "Machine Groups";
+}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h3">Machine Groups</h1>
+    <a class="btn btn-primary" asp-page="Edit">New Group</a>
+</div>
+<table class="table table-sm table-striped">
+    <thead><tr><th>Code</th><th>Name</th><th>Description</th><th>Order</th><th></th></tr></thead>
+    <tbody>
+    @foreach (var group in Model.Groups)
+    {
+        <tr>
+            <td>@group.Code</td>
+            <td>@group.Name</td>
+            <td>@group.Description</td>
+            <td>@group.DisplayOrder</td>
+            <td><a asp-page="Edit" asp-route-id="@group.Id">Edit</a></td>
+        </tr>
+    }
+    </tbody>
+</table>

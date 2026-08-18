@@ -1,0 +1,44 @@
+@page "{id:guid?}"
+@model Rostek.Gateway.Host.Pages.Machines.EditModel
+@{
+    ViewData["Title"] = "Machine";
+}
+<h1 class="h3">Machine</h1>
+<form method="post" class="row g-3">
+    <input asp-for="Input.Id" type="hidden" />
+    <div class="col-md-2"><label class="form-label">Code</label><input asp-for="Input.Code" class="form-control" /></div>
+    <div class="col-md-3"><label class="form-label">Name</label><input asp-for="Input.Name" class="form-control" /></div>
+    <div class="col-md-3"><label class="form-label">Group</label><select asp-for="Input.GroupId" asp-items="Model.GroupOptions" class="form-select"><option value="">None</option></select></div>
+    <div class="col-md-3"><label class="form-label">Template</label><select asp-for="Input.TemplateId" asp-items="Model.TemplateOptions" class="form-select"></select></div>
+    <div class="col-md-1 form-check mt-5"><input asp-for="Input.Enabled" class="form-check-input" /><label class="form-check-label">Enabled</label></div>
+    <div class="col-md-2"><label class="form-label">Order</label><input asp-for="Input.DisplayOrder" class="form-control" /></div>
+    <div class="col-md-10"><label class="form-label">Description</label><input asp-for="Input.Description" class="form-control" /></div>
+    <div class="col-12"><h2 class="h5">OPC UA Connection</h2></div>
+    <div class="col-md-5"><label class="form-label">Endpoint URL</label><input asp-for="Input.OpcUa.EndpointUrl" class="form-control" /></div>
+    <div class="col-md-2"><label class="form-label">Security Mode</label><input asp-for="Input.OpcUa.SecurityMode" class="form-control" /></div>
+    <div class="col-md-2"><label class="form-label">Auth Mode</label><input asp-for="Input.OpcUa.AuthenticationMode" class="form-control" /></div>
+    <div class="col-md-3"><label class="form-label">Credential Ref</label><input asp-for="Input.OpcUa.CredentialReference" class="form-control" /></div>
+    <div class="col-12"><h2 class="h5">Modbus TCP Connection</h2></div>
+    <div class="col-md-3"><label class="form-label">Host</label><input asp-for="Input.ModbusTcp.Host" class="form-control" /></div>
+    <div class="col-md-2"><label class="form-label">Port</label><input asp-for="Input.ModbusTcp.Port" class="form-control" /></div>
+    <div class="col-md-2"><label class="form-label">Unit ID</label><input asp-for="Input.ModbusTcp.UnitId" class="form-control" /></div>
+    <div class="col-md-2"><label class="form-label">Polling ms</label><input asp-for="Input.ModbusTcp.PollingIntervalMs" class="form-control" /></div>
+    <div class="col-md-3"><label class="form-label">Options JSON</label><input asp-for="Input.ModbusTcp.OptionsJson" class="form-control" /></div>
+    @if (!string.IsNullOrWhiteSpace(Model.ErrorMessage))
+    {
+        <div class="col-12 text-danger">@Model.ErrorMessage</div>
+    }
+    <div class="col-12">
+        <button class="btn btn-primary" type="submit">Save Draft</button>
+        @if (Model.Input.Id is not null)
+        {
+            <a class="btn btn-outline-primary" asp-page="Overrides" asp-route-id="@Model.Input.Id">Signal Overrides</a>
+        }
+        <a class="btn btn-secondary" asp-page="Index">Cancel</a>
+    </div>
+</form>
+@if (Model.EffectiveJson is not null)
+{
+    <h2 class="h5 mt-4">Effective Configuration Preview</h2>
+    <pre class="bg-light p-3">@Model.EffectiveJson</pre>
+}

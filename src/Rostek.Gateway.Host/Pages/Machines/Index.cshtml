@@ -1,0 +1,31 @@
+@page
+@model Rostek.Gateway.Host.Pages.Machines.IndexModel
+@{
+    ViewData["Title"] = "Machines";
+}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h3">Machines</h1>
+    <a class="btn btn-primary" asp-page="Edit">New Machine</a>
+</div>
+<form method="get" class="row g-2 mb-3">
+    <div class="col-md-4"><input name="search" value="@Model.Search" class="form-control" placeholder="Search code/name" /></div>
+    <div class="col-md-2"><button class="btn btn-secondary" type="submit">Filter</button></div>
+</form>
+<table class="table table-sm table-striped">
+    <thead><tr><th>Code</th><th>Name</th><th>Group</th><th>Template</th><th>Protocol</th><th>Endpoint/IP</th><th>Enabled</th><th></th></tr></thead>
+    <tbody>
+    @foreach (var machine in Model.Machines.Items)
+    {
+        <tr>
+            <td>@machine.Code</td>
+            <td>@machine.Name</td>
+            <td>@machine.GroupCode</td>
+            <td>@machine.TemplateCode</td>
+            <td>@machine.Protocol</td>
+            <td>@machine.Endpoint</td>
+            <td>@machine.Enabled</td>
+            <td><a asp-page="Edit" asp-route-id="@machine.Id">Edit</a></td>
+        </tr>
+    }
+    </tbody>
+</table>
