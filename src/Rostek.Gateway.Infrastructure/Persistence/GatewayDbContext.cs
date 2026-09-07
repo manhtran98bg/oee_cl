@@ -14,6 +14,9 @@ public sealed class GatewayDbContext(DbContextOptions<GatewayDbContext> options)
     public DbSet<MachineSignalOverride> MachineSignalOverrides => Set<MachineSignalOverride>();
     public DbSet<ConfigurationVersion> ConfigurationVersions => Set<ConfigurationVersion>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
+    public DbSet<ProductionContext> ProductionContexts => Set<ProductionContext>();
+    public DbSet<MesSyncOutboxMessage> MesSyncOutboxMessages => Set<MesSyncOutboxMessage>();
+    public DbSet<PlcRawInterval> PlcRawIntervals => Set<PlcRawInterval>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -100,6 +103,43 @@ public sealed class GatewayDbContext(DbContextOptions<GatewayDbContext> options)
             entity.Property(log => log.Action).HasMaxLength(200).IsRequired();
             entity.Property(log => log.EntityType).HasMaxLength(100).IsRequired();
             entity.HasIndex(log => log.CreatedAtUtc);
+        });
+
+        modelBuilder.Entity<ProductionContext>(entity =>
+        {
+            entity.ToTable("ProductionContexts");
+            entity.HasKey(context => context.Id);
+            entity.Property(context => context.MachineCode).HasMaxLength(100).IsRequired();
+            entity.Property(context => context.CommandCode).HasMaxLength(100).IsRequired();
+            entity.Property(context => context.Status).HasConversion<string>().HasMaxLength(50).IsRequired();
+            entity.Property(context => context.ProductionOrderCode).HasMaxLength(100);
+            entity.Property(context => context.OperatorCode).HasMaxLength(100);
+            entity.Property(context => context.ReasonCode).HasMaxLength(100);
+            entity.HasIndex(context => context.MachineCode).IsUnique();
+            entity.HasIndex(context => context.Status);
+        });
+
+        modelBuilder.Entity<MesSyncOutboxMessage>(entity =>
+        {
+            entity.ToTable("MesSyncOutboxMessages");
+            entity.HasKey(message => message.Id);
+            entity.Property(message => message.Topic).HasMaxLength(100).IsRequired();
+            entity.Property(message => message.Endpoint).HasMaxLength(300).IsRequired();
+            entity.Property(message => message.PayloadJson).IsRequired();
+            entity.Property(message => message.Status).HasConversion<string>().HasMaxLength(50).IsRequired();
+            entity.Property(message => message.LastError).HasMaxLength(2000);
+            entity.HasIndex(message => new { message.Status, message.NextAttemptUnixTimeSeconds });
+            entity.HasIndex(message => new { message.Topic, message.Status });
+            entity.HasIndex(message => message.CreatedUnixTimeSeconds);
+        });
+
+        modelBuilder.Entity<PlcRawInterval>(entity =>
+        {
+            entity.ToTable("PlcRawIntervals");
+            entity.HasKey(raw => raw.Id);
+            entity.Property(raw => raw.MachineCode).HasMaxLength(100).IsRequired();
+            entity.HasIndex(raw => new { raw.MachineCode, raw.ReadAtUnixTimeSeconds }).IsUnique();
+            entity.HasIndex(raw => raw.ReadAtUnixTimeSeconds);
         });
     }
 }

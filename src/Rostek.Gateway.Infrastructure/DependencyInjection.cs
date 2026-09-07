@@ -1,8 +1,10 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
-using Rostek.Gateway.Application.History;
+using Rostek.Gateway.Application.MesSync;
+using Rostek.Gateway.Application.Oee;
 using Rostek.Gateway.Application.Ports;
-using Rostek.Gateway.Infrastructure.History;
+using Rostek.Gateway.Infrastructure.MesSync;
+using Rostek.Gateway.Infrastructure.Oee;
 using Rostek.Gateway.Infrastructure.Persistence;
 using Rostek.Gateway.Infrastructure.Repositories;
 
@@ -15,7 +17,10 @@ public static class DependencyInjection
         services.AddDbContext<GatewayDbContext>(options => options.UseSqlite(connectionString));
         services.AddScoped<GatewayDbInitializer>();
         services.AddScoped<IConfigRepository, EfCoreConfigRepository>();
-        services.AddSingleton<IDeviceSampleWriter, PostgresDeviceSampleWriter>();
+        services.AddScoped<IMesSyncOutboxRepository, EfCoreMesSyncOutboxRepository>();
+        services.AddScoped<IOeeRawIntervalRepository, EfCoreOeeRawIntervalRepository>();
+        services.AddHttpClient();
+        services.AddScoped<IMesServerClient, MesServerClient>();
         return services;
     }
 }

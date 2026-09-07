@@ -1,9 +1,10 @@
 using Rostek.Gateway.Application.Configurations;
 using Rostek.Gateway.Application.Dashboard;
-using Rostek.Gateway.Application.History;
 using Rostek.Gateway.Application.MachineGroups;
 using Rostek.Gateway.Application.Machines;
 using Rostek.Gateway.Application.MachineTemplates;
+using Rostek.Gateway.Application.MesSync;
+using Rostek.Gateway.Application.Oee;
 using Rostek.Gateway.Application.Ports;
 using Rostek.Gateway.Contracts.Configuration;
 using Rostek.Gateway.Contracts.Runtime;
@@ -26,12 +27,12 @@ builder.Configuration
 builder.Services.Configure<GatewayOptions>(builder.Configuration.GetSection("Gateway"));
 builder.Services.PostConfigure<GatewayOptions>(options =>
 {
-    options.DataDirectory = ResolveGatewayPath(options.DataDirectory, "data");
-    options.BackupDirectory = ResolveGatewayPath(options.BackupDirectory, "backups");
-    options.ExportDirectory = ResolveGatewayPath(options.ExportDirectory, "exports");
+    options.DataDirectory = ResolveGatewayPath(externalAppSettings.GatewayHomePath, options.DataDirectory, "data");
+    options.BackupDirectory = ResolveGatewayPath(externalAppSettings.GatewayHomePath, options.BackupDirectory, "backups");
+    options.ExportDirectory = ResolveGatewayPath(externalAppSettings.GatewayHomePath, options.ExportDirectory, "exports");
 });
 builder.Services.Configure<RuntimeOptions>(builder.Configuration.GetSection("Runtime"));
-builder.Services.Configure<HistoryOptions>(builder.Configuration.GetSection("History"));
+builder.Services.Configure<MesSyncOptions>(builder.Configuration.GetSection("MesSync"));
 builder.Services.AddRazorPages();
 builder.Services.AddAntiforgery();
 builder.Services.AddHealthChecks();
@@ -46,13 +47,17 @@ builder.Services.AddScoped<IConfigurationApplyService, ConfigurationApplyService
 builder.Services.AddScoped<IConfigurationVersionService, ConfigurationVersionService>();
 builder.Services.AddScoped<IConfigurationImportExportService, ConfigurationImportExportService>();
 builder.Services.AddScoped<IDashboardService, DashboardService>();
-builder.Services.AddSingleton<IDeviceHistorySampler, DeviceHistorySampler>();
-builder.Services.AddHostedService<DeviceHistoryHostedService>();
+builder.Services.AddScoped<IOeeRawIntervalService, OeeRawIntervalService>();
+builder.Services.AddScoped<IOeeMetricBuilder, OeeMetricBuilder>();
+builder.Services.AddScoped<IProductionCommandService, ProductionCommandService>();
+builder.Services.AddScoped<IMesSyncOutboxService, MesSyncOutboxService>();
+builder.Services.AddScoped<IMesSyncDispatcher, MesSyncDispatcher>();
+builder.Services.AddHostedService<MesSyncHostedService>();
 
 var gatewayOptions = builder.Configuration.GetSection("Gateway").Get<GatewayOptions>() ?? new GatewayOptions();
-gatewayOptions.DataDirectory = ResolveGatewayPath(gatewayOptions.DataDirectory, "data");
-gatewayOptions.BackupDirectory = ResolveGatewayPath(gatewayOptions.BackupDirectory, "backups");
-gatewayOptions.ExportDirectory = ResolveGatewayPath(gatewayOptions.ExportDirectory, "exports");
+gatewayOptions.DataDirectory = ResolveGatewayPath(externalAppSettings.GatewayHomePath, gatewayOptions.DataDirectory, "data");
+gatewayOptions.BackupDirectory = ResolveGatewayPath(externalAppSettings.GatewayHomePath, gatewayOptions.BackupDirectory, "backups");
+gatewayOptions.ExportDirectory = ResolveGatewayPath(externalAppSettings.GatewayHomePath, gatewayOptions.ExportDirectory, "exports");
 Directory.CreateDirectory(gatewayOptions.DataDirectory);
 Directory.CreateDirectory(gatewayOptions.BackupDirectory);
 Directory.CreateDirectory(gatewayOptions.ExportDirectory);
@@ -140,6 +145,15 @@ app.MapGet("/api/v1/machines/{machineCode}/runtime-status", (string machineCode,
 app.MapGet("/api/v1/machines/{machineCode}/values", (string machineCode, IMachineValueReader valueReader) =>
     valueReader.GetSnapshot(machineCode) is { } snapshot ? Results.Ok(snapshot) : Results.NotFound());
 
+app.MapPost("/api/v1/mes/production-commands", async (ProductionCommandRequest request, IProductionCommandService commandService, CancellationToken cancellationToken) =>
+{
+    var response = await commandService.HandleAsync(request, cancellationToken);
+    return response.Accepted ? Results.Ok(response) : Results.BadRequest(response);
+});
+
+app.MapGet("/api/v1/mes-sync/status", async (IMesSyncOutboxRepository repository, Microsoft.Extensions.Options.IOptions<MesSyncOptions> options, CancellationToken cancellationToken) =>
+    Results.Ok(await repository.GetStatusAsync(options.Value.Enabled, cancellationToken)));
+
 app.MapPost("/api/v1/configuration/validate", async (ConfigurationBuilderPort builderService, IConfigurationValidator validator, CancellationToken cancellationToken) =>
     Results.Ok(await validator.ValidateAsync(await builderService.BuildDraftAsync(cancellationToken), cancellationToken)));
 
@@ -163,7 +177,7 @@ app.MapGet("/api/v1/configuration/export", async (IConfigurationImportExportServ
 
 app.Run();
 
-static string ResolveGatewayPath(string? configuredPath, string defaultLeaf)
+static string ResolveGatewayPath(string gatewayHomePath, string? configuredPath, string defaultLeaf)
 {
     var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
     if (string.IsNullOrWhiteSpace(home))
@@ -187,7 +201,7 @@ static string ResolveGatewayPath(string? configuredPath, string defaultLeaf)
         return path;
     }
 
-    return Path.Combine(home, ".gateway", path);
+    return Path.Combine(gatewayHomePath, path);
 }
 
 public partial class Program;

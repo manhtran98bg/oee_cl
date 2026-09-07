@@ -21,9 +21,9 @@ public sealed class ExternalAppSettingsTests
         Assert.Contains("\"Gateway\"", content);
         Assert.Contains("\"Runtime\"", content);
         Assert.Contains("\"Kestrel\"", content);
-        Assert.Contains("\"History\"", content);
-        Assert.Contains("\"RetentionDays\": 90", content);
-        Assert.Contains("\"ConnectionString\": \"\"", content);
+        Assert.Contains("\"MesSync\"", content);
+        Assert.Contains("\"BaseUrl\": \"\"", content);
+        Assert.Contains("\"SyncIntervalMs\": 5000", content);
     }
 
     [Fact]
@@ -40,6 +40,24 @@ public sealed class ExternalAppSettingsTests
         Assert.False(status.Created);
         Assert.Equal("{ \"Gateway\": { \"GatewayId\": \"CUSTOM\" } }", File.ReadAllText(configPath));
     }
+
+    [Fact]
+    public void Resolve_gateway_home_can_use_environment_variable()
+    {
+        var previous = Environment.GetEnvironmentVariable(ExternalAppSettings.GatewayHomeEnvironmentVariable);
+        var gatewayHome = Path.Combine(Path.GetTempPath(), "ro-stek-gateway-tests", Guid.NewGuid().ToString("N"));
+        Environment.SetEnvironmentVariable(ExternalAppSettings.GatewayHomeEnvironmentVariable, gatewayHome);
+
+        try
+        {
+            Assert.Equal(gatewayHome, ExternalAppSettings.ResolveGatewayHomePath());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(ExternalAppSettings.GatewayHomeEnvironmentVariable, previous);
+        }
+    }
+
 
     [Fact]
     public void External_appsettings_overrides_default_and_environment_style_values_override_external()
