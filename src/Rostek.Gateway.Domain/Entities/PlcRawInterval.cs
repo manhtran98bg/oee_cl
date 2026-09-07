@@ -2,17 +2,21 @@ namespace Rostek.Gateway.Domain.Entities;
 
 public sealed class PlcRawInterval
 {
-    public long Id { get; set; }
-    public string MachineCode { get; set; } = string.Empty;
-    public string ProductionOrderCode { get; set; } = string.Empty;
-    public string SessionId { get; set; } = string.Empty;
-    public long ReadAtUnixTimeSeconds { get; set; }
-    public int? MachineState { get; set; }
-    public long? ShotOkTotal { get; set; }
-    public long? ShotNgTotal { get; set; }
-    public int? CycleTimeMs { get; set; }
-    public long? RunTimeTotal { get; set; }
-    public long? StopTimeTotal { get; set; }
-    public long? ErrorTimeTotal { get; set; }
-    public long CreatedUnixTimeSeconds { get; set; } = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public string Machine { get; set; } = string.Empty;
+    public long ReadAt { get; set; }
+    public int PlcPeriodIndex { get; set; }
+    public string RunState { get; set; } = "disconnect";
+    public int PlcBootCounter { get; set; }
+    public int StatusFlags { get; set; }
+    public int PeriodActive { get; set; }
+    public int PlcRestarted { get; set; }
+    public long ShotOkTotal { get; set; }
+    public long ShotNgTotal { get; set; }
+    public long MoldOpenTotal { get; set; }
+    public long RunTimeTotalSec { get; set; }
+    public long StopTimeTotalSec { get; set; }
+    public long ErrorTimeTotalSec { get; set; }
+    public int CycleTimeMs { get; set; }
+    public int CycleAvg10TimeMs { get; set; }
 }

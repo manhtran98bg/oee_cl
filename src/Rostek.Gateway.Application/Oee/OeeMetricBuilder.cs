@@ -1,192 +1,389 @@
+using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Rostek.Gateway.Domain.Entities;
-using Rostek.Gateway.Domain.Enums;
 
 namespace Rostek.Gateway.Application.Oee;
 
 public interface IOeeMetricBuilder
 {
-    Task<IReadOnlyList<OeeMetric>> BuildMetricsAsync(
-        string gatewayId,
-        IReadOnlyCollection<PlcRawInterval> currentRawIntervals,
-        IReadOnlyDictionary<string, ProductionContext> productionContexts,
-        long nowUnixTimeSeconds,
-        bool requireProductionContext,
-        CancellationToken cancellationToken);
+    Task<OeeBuildResult> BuildMetricsAsync(IReadOnlyCollection<PlcRawInterval> currentRawIntervals, CancellationToken cancellationToken);
 }
 
 public sealed class OeeMetricBuilder(
-    IOeeRawIntervalRepository repository,
+    IOeeLocalRepository repository,
+    IProductionContextStore productionContextStore,
     ILogger<OeeMetricBuilder> logger) : IOeeMetricBuilder
 {
-    private const string MetricVersion = "1";
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
-    public async Task<IReadOnlyList<OeeMetric>> BuildMetricsAsync(
-        string gatewayId,
-        IReadOnlyCollection<PlcRawInterval> currentRawIntervals,
-        IReadOnlyDictionary<string, ProductionContext> productionContexts,
-        long nowUnixTimeSeconds,
-        bool requireProductionContext,
-        CancellationToken cancellationToken)
+    public async Task<OeeBuildResult> BuildMetricsAsync(IReadOnlyCollection<PlcRawInterval> currentRawIntervals, CancellationToken cancellationToken)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(gatewayId);
+        var productionMetrics = new List<ProductionMetric>();
+        var productMetrics = new List<ProductMetric>();
+        var downtimeEvents = new List<DowntimeEvent>();
 
-        var metrics = new List<OeeMetric>();
-        foreach (var current in currentRawIntervals.OrderBy(raw => raw.MachineCode).ThenBy(raw => raw.ReadAtUnixTimeSeconds))
+        foreach (var current in currentRawIntervals.OrderBy(raw => raw.Machine, StringComparer.OrdinalIgnoreCase).ThenBy(raw => raw.ReadAt))
         {
-            var context = ResolveProductionContext(current, productionContexts, requireProductionContext);
-            if (context is null)
+            var context = productionContextStore.Get(current.Machine);
+            if (context is null || !context.Status.Equals("active", StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
 
-            var orderId = Normalize(context.ProductionOrderCode);
-            var sessionId = Normalize(context.SessionId);
-            var contextStartedUnixTimeSeconds = context.StartedUnixTimeSeconds ?? 0;
-            var previous = await repository.GetPreviousInContextAsync(
-                current.MachineCode,
-                orderId,
-                sessionId,
-                contextStartedUnixTimeSeconds,
-                current.ReadAtUnixTimeSeconds,
+            var period = await repository.GetProductionPeriodAsync(context.ActivePeriodId, cancellationToken);
+            if (period is null || !period.Status.Equals("active", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (current.PlcPeriodIndex != period.PlcPeriodIndex)
+            {
+                continue;
+            }
+
+            var previous = await repository.GetPreviousRawInPeriodAsync(
+                current.Machine,
+                current.PlcPeriodIndex,
+                period.StartAt,
+                current.ReadAt,
                 cancellationToken);
             if (previous is null)
             {
-                logger.LogDebug("No previous raw interval found for machine {MachineCode} at unix timestamp {ReadAtUnixTimeSeconds}", current.MachineCode, current.ReadAtUnixTimeSeconds);
+                logger.LogDebug("No previous raw interval found for machine {Machine} at unix timestamp {ReadAt}", current.Machine, current.ReadAt);
                 continue;
             }
 
-            var delta = CreateDeltaSample(previous, current);
-            metrics.Add(CreateMetric(gatewayId, context, delta, nowUnixTimeSeconds));
-        }
-
-        return metrics;
-    }
-
-    private static ProductionContext? ResolveProductionContext(
-        PlcRawInterval current,
-        IReadOnlyDictionary<string, ProductionContext> productionContexts,
-        bool requireProductionContext)
-    {
-        if (productionContexts.TryGetValue(current.MachineCode, out var context))
-        {
-            if (context.Status == ProductionContextStatus.Stopped ||
-                string.IsNullOrWhiteSpace(context.ProductionOrderCode) ||
-                string.IsNullOrWhiteSpace(context.SessionId))
+            var products = ParseProducts(period.ProductsJson);
+            foreach (var product in products)
             {
-                return null;
+                productionMetrics.Add(await UpsertSecondMetricAsync(period, product, previous, current, cancellationToken));
+                if (await UpsertStateMetricAsync(period, product, previous, current, cancellationToken) is { } stateMetric)
+                {
+                    productionMetrics.Add(stateMetric);
+                }
+
+                productionMetrics.Add(await UpsertAccumulatedMetricAsync(OeeMetricTypes.Period, period, product, ZeroRaw(period.Machine, period.PlcPeriodIndex, period.StartAt), current, period.StartAt, cancellationToken));
+                productionMetrics.Add(await UpsertBucketMetricAsync(OeeMetricTypes.Hour, period, product, current, StartOfHour(current.ReadAt), cancellationToken));
+                productionMetrics.Add(await UpsertBucketMetricAsync(OeeMetricTypes.Day, period, product, current, StartOfDay(current.ReadAt), cancellationToken));
+
+                var productMetric = await RebuildProductMetricAsync(period, product, cancellationToken);
+                if (productMetric is not null)
+                {
+                    await repository.UpsertProductMetricAsync(productMetric, cancellationToken);
+                    productMetrics.Add(productMetric);
+                }
             }
 
-            return context;
+            if (await UpsertDowntimeAsync(period, current, cancellationToken) is { } downtimeEvent)
+            {
+                downtimeEvents.Add(downtimeEvent);
+            }
         }
 
-        return requireProductionContext
-            ? null
-            : new ProductionContext
-            {
-                MachineCode = current.MachineCode,
-                CommandCode = OeeTestProductionContext.CommandCode,
-                ProductionOrderCode = OeeTestProductionContext.ProductionOrderCode,
-                SessionId = OeeTestProductionContext.SessionId,
-                Status = ProductionContextStatus.Started,
-                StartedUnixTimeSeconds = 0,
-                UpdatedUnixTimeSeconds = current.ReadAtUnixTimeSeconds
-            };
+        return new OeeBuildResult(productionMetrics, productMetrics, downtimeEvents);
     }
 
-    private static OeeDeltaSample CreateDeltaSample(PlcRawInterval previous, PlcRawInterval current) =>
-        new(
-            current.MachineCode,
-            current.ProductionOrderCode,
-            current.SessionId,
-            current.ReadAtUnixTimeSeconds,
-            current.MachineState,
-            CalculateDelta(previous.ShotOkTotal, current.ShotOkTotal),
-            CalculateDelta(previous.ShotNgTotal, current.ShotNgTotal),
-            current.CycleTimeMs,
-            CalculateDelta(previous.RunTimeTotal, current.RunTimeTotal),
-            CalculateDelta(previous.StopTimeTotal, current.StopTimeTotal),
-            CalculateDelta(previous.ErrorTimeTotal, current.ErrorTimeTotal));
-
-    private static OeeMetric CreateMetric(string gatewayId, ProductionContext context, OeeDeltaSample delta, long nowUnixTimeSeconds)
+    private async Task<ProductionMetric> UpsertSecondMetricAsync(
+        ProductionPeriod period,
+        OeeProductDefinition product,
+        PlcRawInterval previous,
+        PlcRawInterval current,
+        CancellationToken cancellationToken)
     {
-        var total = AddNullable(delta.ShotOkDelta, delta.ShotNgDelta);
-        var runTimeSeconds = ToDecimal(delta.RunTimeDeltaSeconds);
-        var stopTimeSeconds = ToDecimal(delta.StopTimeDeltaSeconds);
-        var errorTimeSeconds = ToDecimal(delta.ErrorTimeDeltaSeconds);
-        var prodTimeSeconds = AddNullable(runTimeSeconds, stopTimeSeconds, errorTimeSeconds);
-        var cycleSeconds = MillisecondsToSeconds(delta.CycleTimeMs);
-
-        var availability = Divide(runTimeSeconds, prodTimeSeconds);
-        decimal? quality = total is > 0 && delta.ShotOkDelta is int ok ? Divide(ok, total.Value) : null;
-        decimal? performance = total is > 0 && cycleSeconds is not null && runTimeSeconds is > 0
-            ? ClampRatio(total.Value * cycleSeconds.Value / runTimeSeconds.Value)
-            : null;
-        decimal? oee = availability is not null && performance is not null && quality is not null
-            ? ClampRatio(availability.Value * performance.Value * quality.Value)
-            : null;
-
-        return new OeeMetric(
-            Mode: context.Status.ToString(),
-            Machine: delta.MachineCode,
-            Version: MetricVersion,
-            OrderId: context.ProductionOrderCode,
-            SessionId: context.SessionId,
-            Tag: context.CommandCode,
-            Total: total,
-            NgQty: delta.ShotNgDelta,
-            RunTime: runTimeSeconds,
-            ErrorTime: errorTimeSeconds,
-            StopTime: stopTimeSeconds,
-            ProdTime: prodTimeSeconds,
-            Availability: availability,
-            Performance: performance,
-            Quality: quality,
-            Cycle: cycleSeconds,
-            Oee: oee,
-            ProductId: null,
-            StartAt: context.StartedUnixTimeSeconds,
-            EndAt: delta.SampledAtUnixTimeSeconds,
-            UpdatedAt: nowUnixTimeSeconds);
+        var metric = CreateMetric(OeeMetricTypes.Second, period, product, previous, current, previous.ReadAt, current.ReadAt, runState: string.Empty);
+        await repository.UpsertProductionMetricAsync(metric, cancellationToken);
+        return metric;
     }
 
-    private static int? CalculateDelta(long? previous, long? current)
+    private async Task<ProductionMetric?> UpsertStateMetricAsync(
+        ProductionPeriod period,
+        OeeProductDefinition product,
+        PlcRawInterval previous,
+        PlcRawInterval current,
+        CancellationToken cancellationToken)
     {
-        if (previous is null || current is null)
+        if (!OeeRunStates.IsKnownProcessState(current.RunState))
         {
             return null;
         }
 
-        var delta = current.Value - previous.Value;
-        if (delta < 0)
+        var startAt = previous.ReadAt;
+        var endAt = current.ReadAt;
+        var metric = CreateMetric(OeeMetricTypes.State, period, product, previous, current, startAt, endAt, current.RunState, useStateDuration: true);
+        var latest = await repository.GetLatestStateMetricAsync(current.Machine, period.PeriodId, product.ProductId, current.RunState, startAt, cancellationToken);
+        if (latest is not null && startAt - latest.EndAt <= 60)
         {
-            return 0;
+            latest.EndAt = endAt;
+            latest.TotalQty += metric.TotalQty;
+            latest.NgQty += metric.NgQty;
+            latest.PlanQty += metric.PlanQty;
+            latest.ProdTimeSec += metric.ProdTimeSec;
+            latest.RunTimeSec += metric.RunTimeSec;
+            latest.StopTimeSec += metric.StopTimeSec;
+            latest.ErrorTimeSec += metric.ErrorTimeSec;
+            RecalculateOee(latest, product.EffectiveCycleTime);
+            latest.UpdatedAt = current.ReadAt;
+            await repository.UpsertProductionMetricAsync(latest, cancellationToken);
+            return latest;
         }
 
-        return delta <= int.MaxValue ? (int)delta : null;
+        await repository.UpsertProductionMetricAsync(metric, cancellationToken);
+        return metric;
     }
 
-    private static int? AddNullable(int? left, int? right) =>
-        left is null && right is null ? null : (left ?? 0) + (right ?? 0);
+    private async Task<ProductionMetric> UpsertBucketMetricAsync(
+        string metricType,
+        ProductionPeriod period,
+        OeeProductDefinition product,
+        PlcRawInterval current,
+        long bucketStartAt,
+        CancellationToken cancellationToken)
+    {
+        var baseline = await repository.GetFirstRawInRangeAsync(current.Machine, current.PlcPeriodIndex, bucketStartAt, current.ReadAt, cancellationToken)
+                       ?? current;
+        return await UpsertAccumulatedMetricAsync(metricType, period, product, baseline, current, bucketStartAt, cancellationToken);
+    }
 
-    private static decimal? AddNullable(params decimal?[] values) =>
-        values.All(value => value is null) ? null : values.Sum(value => value ?? 0);
+    private async Task<ProductionMetric> UpsertAccumulatedMetricAsync(
+        string metricType,
+        ProductionPeriod period,
+        OeeProductDefinition product,
+        PlcRawInterval baseline,
+        PlcRawInterval current,
+        long startAt,
+        CancellationToken cancellationToken)
+    {
+        var metric = CreateMetric(metricType, period, product, baseline, current, startAt, current.ReadAt, runState: string.Empty);
+        await repository.UpsertProductionMetricAsync(metric, cancellationToken);
+        return metric;
+    }
 
-    private static decimal? ToDecimal(int? seconds) =>
-        seconds is null ? null : seconds.Value;
+    private async Task<ProductMetric?> RebuildProductMetricAsync(ProductionPeriod period, OeeProductDefinition product, CancellationToken cancellationToken)
+    {
+        var metrics = await repository.ListPeriodMetricsAsync(period.OrderId, product.ProductId, cancellationToken);
+        if (metrics.Count == 0)
+        {
+            return null;
+        }
 
-    private static decimal? MillisecondsToSeconds(int? milliseconds) =>
-        milliseconds is null ? null : Math.Round(milliseconds.Value / 1000m, 3, MidpointRounding.AwayFromZero);
+        var first = metrics.Min(metric => metric.StartAt);
+        var last = metrics.Max(metric => metric.EndAt);
+        var productMetric = new ProductMetric
+        {
+            Machine = period.Machine,
+            ServerOrderId = period.ServerOrderId,
+            OrderId = period.OrderId,
+            ProductId = product.ProductId,
+            StartAt = first,
+            EndAt = last,
+            TotalQty = metrics.Sum(metric => metric.TotalQty),
+            NgQty = metrics.Sum(metric => metric.NgQty),
+            CountCheckQty = metrics.Sum(metric => metric.TotalQty + metric.NgQty),
+            PlanQty = metrics.Sum(metric => metric.PlanQty),
+            ProdTimeSec = metrics.Sum(metric => metric.ProdTimeSec),
+            RunTimeSec = metrics.Sum(metric => metric.RunTimeSec),
+            StopTimeSec = metrics.Sum(metric => metric.StopTimeSec),
+            ErrorTimeSec = metrics.Sum(metric => metric.ErrorTimeSec),
+            ActualCycleSec = product.EffectiveCycleTime,
+            TargetQty = product.Target,
+            UpdatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+        };
+        productMetric.CreatedAt = productMetric.UpdatedAt;
+        RecalculateOee(productMetric, product.EffectiveCycleTime);
+        return productMetric;
+    }
 
-    private static decimal? Divide(decimal? numerator, decimal? denominator) =>
-        numerator is null || denominator is null || denominator == 0 ? null : ClampRatio(numerator.Value / denominator.Value);
+    private async Task<DowntimeEvent?> UpsertDowntimeAsync(ProductionPeriod period, PlcRawInterval current, CancellationToken cancellationToken)
+    {
+        var open = await repository.GetOpenDowntimeEventAsync(current.Machine, period.PeriodId, cancellationToken);
+        if (OeeRunStates.IsDowntime(current.RunState))
+        {
+            if (open is not null && open.State.Equals(current.RunState, StringComparison.OrdinalIgnoreCase))
+            {
+                open.EndAt = current.ReadAt;
+                open.DurationSec = SafeInt(current.ReadAt - open.StartAt);
+                open.UpdatedAt = current.ReadAt;
+                await repository.UpsertDowntimeEventAsync(open, cancellationToken);
+                return open;
+            }
 
-    private static decimal Divide(int numerator, int denominator) =>
-        ClampRatio(numerator / (decimal)denominator);
+            if (open is not null)
+            {
+                open.EndAt = current.ReadAt;
+                open.DurationSec = SafeInt(current.ReadAt - open.StartAt);
+                open.UpdatedAt = current.ReadAt;
+                await repository.UpsertDowntimeEventAsync(open, cancellationToken);
+            }
 
-    private static decimal ClampRatio(decimal value) =>
-        Math.Min(1m, Math.Max(0m, Math.Round(value, 6, MidpointRounding.AwayFromZero)));
+            await repository.UpsertDowntimeEventAsync(new DowntimeEvent
+            {
+                Machine = current.Machine,
+                OrderId = period.OrderId,
+                ServerOrderId = period.ServerOrderId,
+                PeriodId = period.PeriodId,
+                PlcPeriodIndex = current.PlcPeriodIndex,
+                State = current.RunState,
+                StartAt = current.ReadAt,
+                EndAt = 0,
+                DurationSec = 0,
+                OrderExtraJson = period.ExtraJson,
+                CreatedAt = current.ReadAt,
+                UpdatedAt = current.ReadAt
+            }, cancellationToken);
+            return await repository.GetOpenDowntimeEventAsync(current.Machine, period.PeriodId, cancellationToken);
+        }
 
-    private static string Normalize(string? value) =>
-        string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim();
+        if (open is null)
+        {
+            return null;
+        }
+
+        open.EndAt = current.ReadAt;
+        open.DurationSec = SafeInt(current.ReadAt - open.StartAt);
+        open.UpdatedAt = current.ReadAt;
+        await repository.UpsertDowntimeEventAsync(open, cancellationToken);
+        return open;
+    }
+
+    private static ProductionMetric CreateMetric(
+        string metricType,
+        ProductionPeriod period,
+        OeeProductDefinition product,
+        PlcRawInterval baseline,
+        PlcRawInterval current,
+        long startAt,
+        long endAt,
+        string runState,
+        bool useStateDuration = false)
+    {
+        var goodQty = ApplyGain(Delta(baseline.ShotOkTotal, current.ShotOkTotal), product.Gain);
+        var ngQty = ApplyGain(Delta(baseline.ShotNgTotal, current.ShotNgTotal), product.Gain);
+        var elapsedSec = SafeInt(Math.Max(0, endAt - startAt));
+
+        var metric = new ProductionMetric
+        {
+            MetricType = metricType,
+            Machine = current.Machine,
+            OrderId = period.OrderId,
+            ServerOrderId = period.ServerOrderId,
+            PeriodId = period.PeriodId,
+            ProductId = product.ProductId,
+            RunState = runState,
+            StartAt = startAt,
+            EndAt = endAt,
+            TotalQty = goodQty,
+            NgQty = ngQty,
+            ActualCycleSec = product.EffectiveCycleTime,
+            CreatedAt = current.ReadAt,
+            UpdatedAt = current.ReadAt
+        };
+
+        if (useStateDuration)
+        {
+            metric.RunTimeSec = runState == OeeRunStates.Run ? elapsedSec : 0;
+            metric.StopTimeSec = runState == OeeRunStates.Stop ? elapsedSec : 0;
+            metric.ErrorTimeSec = runState == OeeRunStates.Error ? elapsedSec : 0;
+        }
+        else
+        {
+            metric.RunTimeSec = SafeInt(Delta(baseline.RunTimeTotalSec, current.RunTimeTotalSec));
+            metric.StopTimeSec = SafeInt(Delta(baseline.StopTimeTotalSec, current.StopTimeTotalSec));
+            metric.ErrorTimeSec = SafeInt(Delta(baseline.ErrorTimeTotalSec, current.ErrorTimeTotalSec));
+        }
+
+        metric.ProdTimeSec = metric.RunTimeSec + metric.StopTimeSec + metric.ErrorTimeSec;
+        RecalculateOee(metric, product.EffectiveCycleTime);
+        return metric;
+    }
+
+    private static void RecalculateOee(ProductionMetric metric, decimal cycleSec)
+    {
+        metric.PlanQty = cycleSec > 0 ? Math.Round(metric.ProdTimeSec / cycleSec, 6, MidpointRounding.AwayFromZero) : 0;
+        metric.Availability = RatioPercent(metric.RunTimeSec, metric.ProdTimeSec);
+        metric.Performance = metric.PlanQty > 0
+            ? ClampPercent((metric.TotalQty + metric.NgQty) / metric.PlanQty * 100m)
+            : 0;
+        metric.Quality = metric.TotalQty + metric.NgQty > 0
+            ? ClampPercent(metric.TotalQty / (decimal)(metric.TotalQty + metric.NgQty) * 100m)
+            : 0;
+        metric.Oee = Math.Round(metric.Availability * metric.Performance * metric.Quality / 10_000m, 6, MidpointRounding.AwayFromZero);
+    }
+
+    private static void RecalculateOee(ProductMetric metric, decimal cycleSec)
+    {
+        metric.PlanQty = cycleSec > 0 ? Math.Round(metric.ProdTimeSec / cycleSec, 6, MidpointRounding.AwayFromZero) : 0;
+        metric.Availability = RatioPercent(metric.RunTimeSec, metric.ProdTimeSec);
+        metric.Performance = metric.PlanQty > 0
+            ? ClampPercent((metric.TotalQty + metric.NgQty) / metric.PlanQty * 100m)
+            : 0;
+        metric.Quality = metric.TotalQty + metric.NgQty > 0
+            ? ClampPercent(metric.TotalQty / (decimal)(metric.TotalQty + metric.NgQty) * 100m)
+            : 0;
+        metric.Oee = Math.Round(metric.Availability * metric.Performance * metric.Quality / 10_000m, 6, MidpointRounding.AwayFromZero);
+    }
+
+    private static IReadOnlyList<OeeProductDefinition> ParseProducts(string productsJson)
+    {
+        try
+        {
+            var products = JsonSerializer.Deserialize<List<OeeProductDefinition>>(productsJson, JsonOptions);
+            return products is { Count: > 0 }
+                ? products.Select(NormalizeProduct).ToList()
+                : [DefaultProduct()];
+        }
+        catch (JsonException)
+        {
+            return [DefaultProduct()];
+        }
+    }
+
+    private static OeeProductDefinition NormalizeProduct(OeeProductDefinition product) =>
+        new()
+        {
+            ProductId = string.IsNullOrWhiteSpace(product.ProductId) ? string.Empty : product.ProductId.Trim(),
+            Gain = product.Gain <= 0 ? 1m : product.Gain,
+            CycleTime = product.EffectiveCycleTime <= 0 ? 1m : product.EffectiveCycleTime,
+            Target = product.Target
+        };
+
+    private static OeeProductDefinition DefaultProduct() =>
+        new()
+        {
+            Gain = 1m,
+            CycleTime = 1m
+        };
+
+    private static PlcRawInterval ZeroRaw(string machine, int plcPeriodIndex, long readAt) =>
+        new()
+        {
+            Machine = machine,
+            PlcPeriodIndex = plcPeriodIndex,
+            ReadAt = readAt
+        };
+
+    private static long StartOfHour(long unixTimeSeconds)
+    {
+        var value = DateTimeOffset.FromUnixTimeSeconds(unixTimeSeconds).ToUniversalTime();
+        return new DateTimeOffset(value.Year, value.Month, value.Day, value.Hour, 0, 0, TimeSpan.Zero).ToUnixTimeSeconds();
+    }
+
+    private static long StartOfDay(long unixTimeSeconds)
+    {
+        var value = DateTimeOffset.FromUnixTimeSeconds(unixTimeSeconds).ToUniversalTime();
+        return new DateTimeOffset(value.Year, value.Month, value.Day, 0, 0, 0, TimeSpan.Zero).ToUnixTimeSeconds();
+    }
+
+    private static long Delta(long previous, long current) => Math.Max(0, current - previous);
+
+    private static int ApplyGain(long value, decimal gain) =>
+        SafeInt(decimal.ToInt64(Math.Truncate(value * gain)));
+
+    private static int SafeInt(long value) =>
+        value > int.MaxValue ? int.MaxValue : value < int.MinValue ? int.MinValue : (int)value;
+
+    private static decimal RatioPercent(decimal numerator, decimal denominator) =>
+        denominator <= 0 ? 0 : ClampPercent(numerator / denominator * 100m);
+
+    private static decimal ClampPercent(decimal value) =>
+        Math.Min(100m, Math.Max(0m, Math.Round(value, 6, MidpointRounding.AwayFromZero)));
 }

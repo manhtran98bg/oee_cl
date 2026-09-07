@@ -3,7 +3,6 @@ using Microsoft.Extensions.Logging;
 using Rostek.Gateway.Contracts.Machines;
 using Rostek.Gateway.Contracts.Runtime;
 using Rostek.Gateway.Domain.Entities;
-using Rostek.Gateway.Domain.Enums;
 
 namespace Rostek.Gateway.Application.Oee;
 
@@ -11,40 +10,32 @@ public interface IOeeRawIntervalService
 {
     Task<IReadOnlyList<PlcRawInterval>> CaptureAsync(
         TimeSpan interval,
-        IReadOnlyDictionary<string, ProductionContext> productionContexts,
         bool requireProductionContext,
-        CancellationToken cancellationToken);
-}
-
-public interface IOeeRawIntervalRepository
-{
-    Task<IReadOnlyList<PlcRawInterval>> InsertMissingAsync(IReadOnlyCollection<PlcRawInterval> rawIntervals, CancellationToken cancellationToken);
-    Task<PlcRawInterval?> GetPreviousInContextAsync(
-        string machineCode,
-        string productionOrderCode,
-        string sessionId,
-        long contextStartedUnixTimeSeconds,
-        long beforeReadAtUnixTimeSeconds,
         CancellationToken cancellationToken);
 }
 
 public sealed class OeeRawIntervalService(
     IMachineValueReader valueReader,
-    IOeeRawIntervalRepository repository,
+    IOeeLocalRepository repository,
+    IProductionContextStore productionContextStore,
     ILogger<OeeRawIntervalService> logger) : IOeeRawIntervalService
 {
     public async Task<IReadOnlyList<PlcRawInterval>> CaptureAsync(
         TimeSpan interval,
-        IReadOnlyDictionary<string, ProductionContext> productionContexts,
         bool requireProductionContext,
         CancellationToken cancellationToken)
     {
         var intervalSeconds = Math.Max(1, (long)interval.TotalSeconds);
-        var nowUnixTimeSeconds = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        var rawIntervals = valueReader.GetSnapshots()
-            .Select(snapshot => TryCreateRawInterval(snapshot, intervalSeconds, nowUnixTimeSeconds, productionContexts, requireProductionContext))
-            .OfType<PlcRawInterval>()
-            .ToList();
+        var rawIntervals = new List<PlcRawInterval>();
+
+        foreach (var snapshot in valueReader.GetSnapshots().OrderBy(item => item.MachineCode, StringComparer.OrdinalIgnoreCase))
+        {
+            var raw = await TryCreateRawIntervalAsync(snapshot, intervalSeconds, requireProductionContext, cancellationToken);
+            if (raw is not null)
+            {
+                rawIntervals.Add(raw);
+            }
+        }
 
         if (rawIntervals.Count == 0)
         {
@@ -52,28 +43,36 @@ public sealed class OeeRawIntervalService(
             return [];
         }
 
-        var inserted = await repository.InsertMissingAsync(rawIntervals, cancellationToken);
+        var inserted = await repository.InsertMissingRawIntervalsAsync(rawIntervals, cancellationToken);
         logger.LogDebug("Captured {InsertedCount} OEE raw intervals", inserted.Count);
         return inserted;
     }
 
-    private static PlcRawInterval? TryCreateRawInterval(
+    private async Task<PlcRawInterval?> TryCreateRawIntervalAsync(
         MachineValueSnapshotDto snapshot,
         long intervalSeconds,
-        long nowUnixTimeSeconds,
-        IReadOnlyDictionary<string, ProductionContext> productionContexts,
-        bool requireProductionContext)
+        bool requireProductionContext,
+        CancellationToken cancellationToken)
     {
         if (!snapshot.Online || snapshot.LastReadUtc is null || snapshot.Values.Count == 0)
         {
             return null;
         }
 
-        var context = ResolveContext(snapshot.MachineCode, productionContexts, requireProductionContext);
-        if (context is null)
+        var readAt = AlignToInterval(snapshot.LastReadUtc.Value.ToUniversalTime().ToUnixTimeSeconds(), intervalSeconds);
+        var context = productionContextStore.Get(snapshot.MachineCode);
+        if (context is null && !requireProductionContext)
+        {
+            context = await repository.EnsureTestProductionContextAsync(snapshot.MachineCode, readAt, cancellationToken);
+            productionContextStore.Upsert(context);
+        }
+
+        if (context is null || !context.Status.Equals("active", StringComparison.OrdinalIgnoreCase))
         {
             return null;
         }
+
+        await repository.EnsureTestProductionPeriodAsync(context, readAt, cancellationToken);
 
         var signals = snapshot.Values
             .GroupBy(value => value.SignalCode, StringComparer.OrdinalIgnoreCase)
@@ -82,49 +81,50 @@ public sealed class OeeRawIntervalService(
                 group => group.OrderByDescending(value => value.TimestampUtc).First(),
                 StringComparer.OrdinalIgnoreCase);
 
-        var readAtUnixTimeSeconds = AlignToInterval(snapshot.LastReadUtc.Value.ToUniversalTime().ToUnixTimeSeconds(), intervalSeconds);
         return new PlcRawInterval
         {
-            MachineCode = snapshot.MachineCode,
-            ProductionOrderCode = Normalize(context.ProductionOrderCode),
-            SessionId = Normalize(context.SessionId),
-            ReadAtUnixTimeSeconds = readAtUnixTimeSeconds,
-            MachineState = ReadInt32(signals, OeeSignalCodes.MachineState),
-            ShotOkTotal = ReadInt64(signals, OeeSignalCodes.ShotOkCount),
-            ShotNgTotal = ReadInt64(signals, OeeSignalCodes.ShotNgCount),
-            CycleTimeMs = ReadInt32(signals, OeeSignalCodes.CycleTimeMs),
-            RunTimeTotal = ReadInt64(signals, OeeSignalCodes.RunTimeTotal),
-            StopTimeTotal = ReadInt64(signals, OeeSignalCodes.StopTimeTotal),
-            ErrorTimeTotal = ReadInt64(signals, OeeSignalCodes.ErrorTimeTotal),
-            CreatedUnixTimeSeconds = nowUnixTimeSeconds
+            Machine = snapshot.MachineCode,
+            ReadAt = readAt,
+            PlcPeriodIndex = context.CurrentPlcPeriodIndex,
+            RunState = ReadRunState(signals),
+            ShotOkTotal = ReadInt64(signals, OeeSignalCodes.ShotOkCount) ?? 0,
+            ShotNgTotal = ReadInt64(signals, OeeSignalCodes.ShotNgCount) ?? 0,
+            RunTimeTotalSec = ReadInt64(signals, OeeSignalCodes.RunTimeTotal) ?? 0,
+            StopTimeTotalSec = ReadInt64(signals, OeeSignalCodes.StopTimeTotal) ?? 0,
+            ErrorTimeTotalSec = ReadInt64(signals, OeeSignalCodes.ErrorTimeTotal) ?? 0,
+            CycleTimeMs = ReadInt32(signals, OeeSignalCodes.CycleTimeMs) ?? 0,
+            PeriodActive = context.Status.Equals("active", StringComparison.OrdinalIgnoreCase) ? 1 : 0
         };
     }
 
-    private static ProductionContext? ResolveContext(
-        string machineCode,
-        IReadOnlyDictionary<string, ProductionContext> productionContexts,
-        bool requireProductionContext)
+    private static string ReadRunState(IReadOnlyDictionary<string, SignalValueDto> signals)
     {
-        if (productionContexts.TryGetValue(machineCode, out var context) &&
-            context.Status != ProductionContextStatus.Stopped)
+        if (!signals.TryGetValue(OeeSignalCodes.MachineState, out var signal) || signal.Value is null)
         {
-            return context;
+            return OeeRunStates.Disconnect;
         }
 
-        return requireProductionContext
-            ? null
-            : new ProductionContext
+        if (signal.Value is string text)
+        {
+            var normalized = text.Trim().ToLowerInvariant();
+            return normalized switch
             {
-                MachineCode = machineCode,
-                CommandCode = OeeTestProductionContext.CommandCode,
-                ProductionOrderCode = OeeTestProductionContext.ProductionOrderCode,
-                SessionId = OeeTestProductionContext.SessionId,
-                Status = ProductionContextStatus.Started
+                "1" or "run" or "running" or "production" => OeeRunStates.Run,
+                "2" or "stop" or "stopped" or "pause" or "paused" => OeeRunStates.Stop,
+                "3" or "error" or "fault" or "faulted" or "alarm" => OeeRunStates.Error,
+                _ => OeeRunStates.Disconnect
             };
-    }
+        }
 
-    private static string Normalize(string? value) =>
-        string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim();
+        var numeric = ReadInt64(signals, OeeSignalCodes.MachineState);
+        return numeric switch
+        {
+            1 => OeeRunStates.Run,
+            2 => OeeRunStates.Stop,
+            3 => OeeRunStates.Error,
+            _ => OeeRunStates.Disconnect
+        };
+    }
 
     private static long AlignToInterval(long unixTimeSeconds, long intervalSeconds) =>
         unixTimeSeconds - unixTimeSeconds % intervalSeconds;

@@ -1,6 +1,6 @@
 using System.Text.Json.Serialization;
+using Rostek.Gateway.Application.Oee;
 using Rostek.Gateway.Domain.Entities;
-using Rostek.Gateway.Domain.Enums;
 
 namespace Rostek.Gateway.Application.MesSync;
 
@@ -19,11 +19,12 @@ public sealed class MesSyncOptions
 public static class MesSyncTopics
 {
     public const string MetricSecond = "metric.second";
-}
-
-public static class MesSyncEndpoints
-{
-    public const string SecondlyProductionSync = "/secondly-production/sync";
+    public const string MetricState = "metric.state";
+    public const string MetricHour = "metric.hour";
+    public const string MetricDay = "metric.day";
+    public const string MetricPeriod = "metric.period";
+    public const string ProductMetric = "product_metric";
+    public const string Downtime = "downtime";
 }
 
 public sealed record ProductionCommandRequest(
@@ -58,7 +59,7 @@ public interface IProductionCommandService
 
 public interface IMesSyncOutboxService
 {
-    Task<int> EnqueueSecondlyMetricsAsync(string gatewayId, CancellationToken cancellationToken);
+    Task<MesOutboxBuildResult> EnqueueLocalOeeAsync(string gatewayId, CancellationToken cancellationToken);
 }
 
 public interface IMesSyncDispatcher
@@ -73,13 +74,9 @@ public interface IMesServerClient
 
 public interface IMesSyncOutboxRepository
 {
-    Task<ProductionContext?> GetProductionContextAsync(string machineCode, CancellationToken cancellationToken);
-    Task<IReadOnlyDictionary<string, ProductionContext>> ListActiveProductionContextsAsync(CancellationToken cancellationToken);
-    Task SaveProductionContextAsync(ProductionContext context, CancellationToken cancellationToken);
-    Task AddOutboxMessageAsync(MesSyncOutboxMessage message, CancellationToken cancellationToken);
-    Task<List<MesSyncOutboxMessage>> TakePendingAsync(long nowUnixTimeSeconds, int batchSize, CancellationToken cancellationToken);
-    Task MarkSyncedAsync(long id, long nowUnixTimeSeconds, CancellationToken cancellationToken);
-    Task MarkFailedAsync(long id, string error, long nextAttemptUnixTimeSeconds, long nowUnixTimeSeconds, CancellationToken cancellationToken);
+    Task<IReadOnlyList<MesSyncOutboxMessage>> TakePendingAsync(int batchSize, CancellationToken cancellationToken);
+    Task MarkSyncedAsync(string id, long nowUnixTimeSeconds, CancellationToken cancellationToken);
+    Task MarkFailedAsync(string id, string error, long nowUnixTimeSeconds, CancellationToken cancellationToken);
     Task<MesSyncStatusDto> GetStatusAsync(bool enabled, CancellationToken cancellationToken);
 }
 
@@ -89,16 +86,16 @@ public static class ProductionCommandActions
     public const string Pause = "pause";
     public const string Stop = "stop";
 
-    public static bool TryMapStatus(string action, out ProductionContextStatus status)
+    public static bool TryMapStatus(string action, out string status)
     {
         status = action.Trim().ToLowerInvariant() switch
         {
-            Start => ProductionContextStatus.Started,
-            Pause => ProductionContextStatus.Paused,
-            Stop => ProductionContextStatus.Stopped,
-            _ => default
+            Start => "active",
+            Pause => "pause",
+            Stop => "stopped",
+            _ => string.Empty
         };
 
-        return status != default;
+        return status.Length > 0;
     }
 }

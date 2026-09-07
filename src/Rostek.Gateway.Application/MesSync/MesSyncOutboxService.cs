@@ -7,7 +7,8 @@ using Rostek.Gateway.Domain.Entities;
 namespace Rostek.Gateway.Application.MesSync;
 
 public sealed class ProductionCommandService(
-    IMesSyncOutboxRepository repository,
+    IOeeLocalRepository repository,
+    IProductionContextStore productionContextStore,
     ILogger<ProductionCommandService> logger) : IProductionCommandService
 {
     public async Task<ProductionCommandResponse> HandleAsync(ProductionCommandRequest request, CancellationToken cancellationToken)
@@ -27,41 +28,33 @@ public sealed class ProductionCommandService(
             return new ProductionCommandResponse(false, request.MachineCode, request.CommandCode, null, "action must be start, pause, or stop.");
         }
 
-        var machineCode = request.MachineCode.Trim();
-        var occurredAtUnixTimeSeconds = request.OccurredAtUnixTimeSeconds ?? DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        var context = await repository.GetProductionContextAsync(machineCode, cancellationToken) ?? new ProductionContext
+        var now = request.OccurredAtUnixTimeSeconds ?? DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var machine = request.MachineCode.Trim();
+        var context = await repository.GetProductionContextAsync(machine, cancellationToken) ?? new ProductionContext
         {
-            MachineCode = machineCode
+            Machine = machine,
+            Mode = OeeTestProductionContext.Mode,
+            CurrentPlcPeriodIndex = OeeTestProductionContext.PlcPeriodIndex,
+            ProductsJson = OeeTestProductionContext.ProductsJson,
+            TagsJson = OeeTestProductionContext.TagsJson,
+            ExtraJson = OeeTestProductionContext.ExtraJson
         };
 
-        context.CommandCode = request.CommandCode.Trim();
         context.Status = status;
-        context.ProductionOrderCode = Normalize(request.ProductionOrderCode);
-        context.SessionId = Normalize(request.SessionId) ?? string.Empty;
-        context.OperatorCode = Normalize(request.OperatorCode);
-        context.ReasonCode = Normalize(request.ReasonCode);
-        context.Note = Normalize(request.Note);
-        context.UpdatedUnixTimeSeconds = occurredAtUnixTimeSeconds;
-
-        switch (status)
-        {
-            case Domain.Enums.ProductionContextStatus.Started:
-                context.StartedUnixTimeSeconds = occurredAtUnixTimeSeconds;
-                context.PausedUnixTimeSeconds = null;
-                context.StoppedUnixTimeSeconds = null;
-                break;
-            case Domain.Enums.ProductionContextStatus.Paused:
-                context.PausedUnixTimeSeconds = occurredAtUnixTimeSeconds;
-                break;
-            case Domain.Enums.ProductionContextStatus.Stopped:
-                context.StoppedUnixTimeSeconds = occurredAtUnixTimeSeconds;
-                break;
-        }
+        context.OrderId = Normalize(request.ProductionOrderCode) ?? context.OrderId;
+        context.ServerOrderId = context.OrderId;
+        context.ActivePeriodId = Normalize(request.SessionId) ?? context.ActivePeriodId;
+        context.UpdatedAt = now;
 
         await repository.SaveProductionContextAsync(context, cancellationToken);
-        logger.LogInformation("Production command accepted. MachineCode={MachineCode}, CommandCode={CommandCode}, Status={Status}", context.MachineCode, context.CommandCode, context.Status);
+        productionContextStore.Upsert(context);
+        if (status == "active")
+        {
+            await repository.EnsureTestProductionPeriodAsync(context, now, cancellationToken);
+        }
 
-        return new ProductionCommandResponse(true, context.MachineCode, context.CommandCode, context.Status.ToString(), "Accepted");
+        logger.LogInformation("Production command accepted. Machine={Machine}, CommandCode={CommandCode}, Status={Status}", context.Machine, request.CommandCode.Trim(), context.Status);
+        return new ProductionCommandResponse(true, context.Machine, request.CommandCode.Trim(), context.Status, "Accepted");
     }
 
     private static string? Normalize(string? value) =>
@@ -72,105 +65,174 @@ public sealed class MesSyncOutboxService(
     IOptions<MesSyncOptions> options,
     IOeeRawIntervalService rawIntervalService,
     IOeeMetricBuilder metricBuilder,
-    IMesSyncOutboxRepository repository,
+    IOeeLocalRepository repository,
     ILogger<MesSyncOutboxService> logger) : IMesSyncOutboxService
 {
+    private const string MetricVersion = "1";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
-    public async Task<int> EnqueueSecondlyMetricsAsync(string gatewayId, CancellationToken cancellationToken)
+    public async Task<MesOutboxBuildResult> EnqueueLocalOeeAsync(string gatewayId, CancellationToken cancellationToken)
     {
         var current = options.Value;
         var interval = TimeSpan.FromMilliseconds(Math.Max(1000, current.SyncIntervalMs));
-        var contexts = await repository.ListActiveProductionContextsAsync(cancellationToken);
-        var rawIntervals = await rawIntervalService.CaptureAsync(
-            interval,
-            contexts,
-            current.RequireProductionContext,
-            cancellationToken);
+        var rawIntervals = await rawIntervalService.CaptureAsync(interval, current.RequireProductionContext, cancellationToken);
         if (rawIntervals.Count == 0)
         {
-            logger.LogDebug("No new OEE raw intervals available to build MES metrics");
-            return 0;
+            logger.LogDebug("No new PLC raw intervals available for local OEE pipeline");
+            return new MesOutboxBuildResult(0, 0, 0, 0, 0);
         }
 
-        logger.LogDebug(
-            "Building MES metrics. RequireProductionContext={RequireProductionContext}, RawIntervalCount={RawIntervalCount}, ProductionContextCount={ProductionContextCount}",
-            current.RequireProductionContext,
+        var build = await metricBuilder.BuildMetricsAsync(rawIntervals, cancellationToken);
+        var outboxCount = await EnqueueOutboxAsync(build, cancellationToken);
+        logger.LogInformation(
+            "Local OEE pipeline completed. RawIntervals={RawIntervalCount}, ProductionMetrics={ProductionMetricCount}, ProductMetrics={ProductMetricCount}, DowntimeEvents={DowntimeEventCount}, OutboxRows={OutboxCount}",
             rawIntervals.Count,
-            contexts.Count);
-        var metrics = await metricBuilder.BuildMetricsAsync(
-            gatewayId,
-            rawIntervals,
-            contexts,
-            DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-            current.RequireProductionContext,
-            cancellationToken);
-        if (metrics.Count == 0)
+            build.ProductionMetricCount,
+            build.ProductMetricCount,
+            build.DowntimeEventCount,
+            outboxCount);
+
+        return new MesOutboxBuildResult(rawIntervals.Count, build.ProductionMetricCount, build.ProductMetricCount, build.DowntimeEventCount, outboxCount);
+    }
+
+    private async Task<int> EnqueueOutboxAsync(OeeBuildResult build, CancellationToken cancellationToken)
+    {
+        var count = 0;
+        foreach (var metric in build.ProductionMetrics)
         {
-            logger.LogDebug("No OEE secondly metrics available to enqueue");
-            return 0;
+            var period = await repository.GetProductionPeriodAsync(metric.PeriodId, cancellationToken);
+            if (period is null)
+            {
+                continue;
+            }
+
+            var topic = metric.MetricType switch
+            {
+                OeeMetricTypes.Second => MesSyncTopics.MetricSecond,
+                OeeMetricTypes.State => MesSyncTopics.MetricState,
+                OeeMetricTypes.Hour => MesSyncTopics.MetricHour,
+                OeeMetricTypes.Day => MesSyncTopics.MetricDay,
+                OeeMetricTypes.Period => MesSyncTopics.MetricPeriod,
+                _ => $"metric.{metric.MetricType}"
+            };
+
+            await repository.EnqueueOutboxAsync(new MesSyncOutboxMessage
+            {
+                Topic = topic,
+                SourceTable = "production_metric",
+                SourceId = $"{metric.MetricType}|{metric.PeriodId}|{metric.ProductId}|{metric.RunState}|{metric.StartAt}",
+                PayloadJson = JsonSerializer.Serialize(ToPayload(metric, period), JsonOptions),
+                CreatedAt = metric.CreatedAt,
+                UpdatedAt = metric.UpdatedAt
+            }, cancellationToken);
+            count++;
         }
 
-        var payloadJson = JsonSerializer.Serialize(new { data = metrics }, JsonOptions);
-        var nowUnixTimeSeconds = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        await repository.AddOutboxMessageAsync(new MesSyncOutboxMessage
+        foreach (var metric in build.ProductMetrics)
         {
-            Topic = MesSyncTopics.MetricSecond,
-            Endpoint = MesSyncEndpoints.SecondlyProductionSync,
-            PayloadJson = payloadJson,
-            CreatedUnixTimeSeconds = nowUnixTimeSeconds,
-            UpdatedUnixTimeSeconds = nowUnixTimeSeconds,
-            NextAttemptUnixTimeSeconds = nowUnixTimeSeconds
-        }, cancellationToken);
+            await repository.EnqueueOutboxAsync(new MesSyncOutboxMessage
+            {
+                Topic = MesSyncTopics.ProductMetric,
+                SourceTable = "product_metric",
+                SourceId = $"{metric.OrderId}|{metric.ProductId}",
+                PayloadJson = JsonSerializer.Serialize(ToPayload(metric), JsonOptions),
+                CreatedAt = metric.CreatedAt,
+                UpdatedAt = metric.UpdatedAt
+            }, cancellationToken);
+            count++;
+        }
 
-        logger.LogInformation("Enqueued {MetricCount} OEE secondly metrics for MES sync", metrics.Count);
-        return metrics.Count;
+        foreach (var downtime in build.DowntimeEvents)
+        {
+            await repository.EnqueueOutboxAsync(new MesSyncOutboxMessage
+            {
+                Topic = MesSyncTopics.Downtime,
+                SourceTable = "downtime_event",
+                SourceId = downtime.Id,
+                PayloadJson = JsonSerializer.Serialize(ToPayload(downtime), JsonOptions),
+                CreatedAt = downtime.CreatedAt,
+                UpdatedAt = downtime.UpdatedAt
+            }, cancellationToken);
+            count++;
+        }
+
+        return count;
     }
+
+    private static OeeMetricPayload ToPayload(ProductionMetric metric, ProductionPeriod period)
+    {
+        var syncTarget = metric.MetricType == OeeMetricTypes.Period ? "period" : "process";
+        var includeCountCheck = metric.MetricType != OeeMetricTypes.State;
+        return new OeeMetricPayload(
+            Mode: period.Mode,
+            Machine: metric.Machine,
+            Version: MetricVersion,
+            PeriodId: metric.PeriodId,
+            OrderId: metric.OrderId,
+            Tag: OeeTestProductionContext.OrderId,
+            Total: metric.TotalQty,
+            RunTime: metric.RunTimeSec,
+            ErrorTime: metric.ErrorTimeSec,
+            StopTime: metric.StopTimeSec,
+            ProdTime: metric.ProdTimeSec,
+            Plan: metric.PlanQty,
+            Availability: metric.Availability,
+            Performance: metric.Performance,
+            Quality: metric.Quality,
+            Cycle: metric.ActualCycleSec,
+            Oee: metric.Oee,
+            ProductId: metric.ProductId,
+            StartAt: metric.StartAt,
+            EndAt: metric.EndAt,
+            UpdatedAt: metric.UpdatedAt,
+            CountCheck: includeCountCheck ? metric.TotalQty + metric.NgQty : null,
+            Ng: includeCountCheck ? metric.NgQty : null,
+            SyncTarget: syncTarget);
+    }
+
+    private static object ToPayload(ProductMetric metric) => new
+    {
+        total = metric.TotalQty,
+        run_time = metric.RunTimeSec,
+        error_time = metric.ErrorTimeSec,
+        stop_time = metric.StopTimeSec,
+        prod_time = metric.ProdTimeSec,
+        count_check = metric.CountCheckQty,
+        ng = metric.NgQty,
+        plan = metric.PlanQty,
+        A = metric.Availability,
+        P = metric.Performance,
+        Q = metric.Quality,
+        cycle = metric.ActualCycleSec,
+        OEE = metric.Oee,
+        id = metric.ProductId,
+        order_id = metric.OrderId,
+        trial = false,
+        start_at = metric.StartAt,
+        end_at = metric.EndAt,
+        status = metric.Status,
+        updated_at = metric.UpdatedAt
+    };
+
+    private static object ToPayload(DowntimeEvent downtime) => new
+    {
+        machine = downtime.Machine,
+        order = downtime.OrderId,
+        start_time = downtime.StartAt,
+        duration = downtime.DurationSec,
+        error = downtime.Error,
+        category = downtime.Category,
+        description = downtime.Description,
+        extra = downtime.OrderExtraJson
+    };
 }
 
 public sealed class MesSyncDispatcher(
-    IOptions<MesSyncOptions> options,
-    IMesSyncOutboxRepository repository,
-    IMesServerClient serverClient,
     ILogger<MesSyncDispatcher> logger) : IMesSyncDispatcher
 {
-    public async Task<int> DispatchPendingAsync(CancellationToken cancellationToken)
+    public Task<int> DispatchPendingAsync(CancellationToken cancellationToken)
     {
-        var current = options.Value;
-        if (!current.Enabled)
-        {
-            return 0;
-        }
-
-        var nowUnixTimeSeconds = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        var messages = await repository.TakePendingAsync(nowUnixTimeSeconds, Math.Clamp(current.BatchSize, 1, 1000), cancellationToken);
-        var synced = 0;
-        foreach (var message in messages)
-        {
-            try
-            {
-                await serverClient.SendAsync(message.Endpoint, message.PayloadJson, cancellationToken);
-                await repository.MarkSyncedAsync(message.Id, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), cancellationToken);
-                synced++;
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                var nextAttemptUnixTimeSeconds = CalculateNextAttempt(DateTimeOffset.UtcNow.ToUnixTimeSeconds(), message.RetryCount);
-                await repository.MarkFailedAsync(message.Id, ex.Message, nextAttemptUnixTimeSeconds, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), cancellationToken);
-                logger.LogWarning(ex, "MES sync failed. OutboxId={OutboxId}, Topic={Topic}, NextAttemptUnixTimeSeconds={NextAttemptUnixTimeSeconds}", message.Id, message.Topic, nextAttemptUnixTimeSeconds);
-            }
-        }
-
-        return synced;
-    }
-
-    private static long CalculateNextAttempt(long nowUnixTimeSeconds, int retryCount)
-    {
-        var delaySeconds = Math.Min(60, Math.Pow(2, Math.Min(6, retryCount)));
-        return nowUnixTimeSeconds + (long)delaySeconds;
+        logger.LogDebug("MES HTTP dispatch is disabled in local Python OEE schema test phase");
+        return Task.FromResult(0);
     }
 }

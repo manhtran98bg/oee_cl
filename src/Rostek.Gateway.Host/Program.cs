@@ -49,6 +49,7 @@ builder.Services.AddScoped<IConfigurationImportExportService, ConfigurationImpor
 builder.Services.AddScoped<IDashboardService, DashboardService>();
 builder.Services.AddScoped<IOeeRawIntervalService, OeeRawIntervalService>();
 builder.Services.AddScoped<IOeeMetricBuilder, OeeMetricBuilder>();
+builder.Services.AddSingleton<IProductionContextStore, ProductionContextStore>();
 builder.Services.AddScoped<IProductionCommandService, ProductionCommandService>();
 builder.Services.AddScoped<IMesSyncOutboxService, MesSyncOutboxService>();
 builder.Services.AddScoped<IMesSyncDispatcher, MesSyncDispatcher>();
@@ -84,6 +85,12 @@ using (var scope = app.Services.CreateScope())
     startupLogger.LogInformation("Initializing configuration database at {DatabasePath}", Path.Combine(gatewayOptions.DataDirectory, "config.db"));
     await initializer.InitializeAsync(CancellationToken.None);
     startupLogger.LogInformation("Configuration database initialized");
+
+    var oeeRepository = scope.ServiceProvider.GetRequiredService<IOeeLocalRepository>();
+    var productionContextStore = scope.ServiceProvider.GetRequiredService<IProductionContextStore>();
+    var productionContexts = await oeeRepository.ListProductionContextsAsync(CancellationToken.None);
+    productionContextStore.Replace(productionContexts);
+    startupLogger.LogInformation("Loaded {ProductionContextCount} production contexts into OEE memory store", productionContexts.Count);
 
     var versionService = scope.ServiceProvider.GetRequiredService<IConfigurationVersionService>();
     var active = await versionService.GetActiveAsync(CancellationToken.None);

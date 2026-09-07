@@ -21,7 +21,7 @@ public sealed class MesSyncHostedService(
 
         var interval = TimeSpan.FromMilliseconds(Math.Max(1000, current.SyncIntervalMs));
         logger.LogInformation(
-            "MES sync started. SyncIntervalMs={SyncIntervalMs}, BatchSize={BatchSize}, RequireProductionContext={RequireProductionContext}",
+            "Local MES OEE pipeline started. SyncIntervalMs={SyncIntervalMs}, BatchSize={BatchSize}, RequireProductionContext={RequireProductionContext}",
             (int)interval.TotalMilliseconds,
             current.BatchSize,
             current.RequireProductionContext);
@@ -50,13 +50,7 @@ public sealed class MesSyncHostedService(
         {
             using var scope = scopeFactory.CreateScope();
             var outboxService = scope.ServiceProvider.GetRequiredService<IMesSyncOutboxService>();
-            var dispatcher = scope.ServiceProvider.GetRequiredService<IMesSyncDispatcher>();
-            await outboxService.EnqueueSecondlyMetricsAsync(gatewayOptions.Value.GatewayId, stoppingToken);
-            var synced = await dispatcher.DispatchPendingAsync(stoppingToken);
-            if (synced > 0)
-            {
-                logger.LogInformation("MES sync sent {MessageCount} outbox messages", synced);
-            }
+            await outboxService.EnqueueLocalOeeAsync(gatewayOptions.Value.GatewayId, stoppingToken);
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {

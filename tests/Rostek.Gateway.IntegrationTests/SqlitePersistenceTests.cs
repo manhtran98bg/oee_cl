@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Rostek.Gateway.Application.Oee;
 using Rostek.Gateway.Domain.Entities;
 using Rostek.Gateway.Domain.Enums;
 using Rostek.Gateway.Infrastructure.MesSync;
@@ -27,78 +28,74 @@ public sealed class SqlitePersistenceTests
     }
 
     [Fact]
-    public async Task Migration_creates_production_context_and_mes_sync_outbox_tables()
+    public async Task Migration_creates_python_local_oee_tables()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
         await using var db = CreateContext(connection);
         await db.Database.EnsureCreatedAsync();
 
-        db.ProductionContexts.Add(new ProductionContext
-        {
-            MachineCode = "M16-01",
-            CommandCode = "CMD-001",
-            Status = ProductionContextStatus.Started,
-            ProductionOrderCode = "MO-001",
-            SessionId = "SESSION-001"
-        });
-        db.MesSyncOutboxMessages.Add(new MesSyncOutboxMessage
-        {
-            Topic = "metric.second",
-            Endpoint = "/secondly-production/sync",
-            PayloadJson = "{\"data\":[]}",
-            Status = MesSyncOutboxStatus.Pending
-        });
-        await db.SaveChangesAsync();
+        var tableNames = await ReadTableNamesAsync(connection);
 
-        Assert.Equal(1, await db.ProductionContexts.CountAsync());
-        Assert.Equal(1, await db.MesSyncOutboxMessages.CountAsync());
+        Assert.Contains("production_context", tableNames);
+        Assert.Contains("production_period", tableNames);
+        Assert.Contains("plc_raw_interval", tableNames);
+        Assert.Contains("production_metric", tableNames);
+        Assert.Contains("product_metric", tableNames);
+        Assert.Contains("downtime_event", tableNames);
+        Assert.Contains("sync_outbox", tableNames);
+        Assert.Contains("Machines", tableNames);
+        Assert.Contains("TemplateSignals", tableNames);
     }
 
     [Fact]
-    public async Task Migration_creates_plc_raw_intervals_with_unique_machine_interval()
+    public async Task Ef_migrations_apply_python_local_oee_schema_without_removing_config_tables()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        await using var db = CreateContext(connection);
+
+        await db.Database.MigrateAsync();
+
+        var tableNames = await ReadTableNamesAsync(connection);
+        Assert.Contains("production_context", tableNames);
+        Assert.Contains("production_period", tableNames);
+        Assert.Contains("plc_raw_interval", tableNames);
+        Assert.Contains("production_metric", tableNames);
+        Assert.Contains("product_metric", tableNames);
+        Assert.Contains("downtime_event", tableNames);
+        Assert.Contains("sync_outbox", tableNames);
+        Assert.Contains("Machines", tableNames);
+        Assert.Contains("TemplateSignals", tableNames);
+    }
+
+    [Fact]
+    public async Task Plc_raw_interval_enforces_unique_machine_read_at()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
         await using var db = CreateContext(connection);
         await db.Database.EnsureCreatedAsync();
-        var readAt = DateTimeOffset.FromUnixTimeMilliseconds(10_000);
 
-        db.PlcRawIntervals.Add(new PlcRawInterval
-        {
-            MachineCode = "M16-01",
-            ProductionOrderCode = "MO-001",
-            SessionId = "SESSION-001",
-            ReadAtUnixTimeSeconds = readAt.ToUnixTimeSeconds(),
-            ShotOkTotal = 100
-        });
-        db.PlcRawIntervals.Add(new PlcRawInterval
-        {
-            MachineCode = "M16-01",
-            ProductionOrderCode = "MO-001",
-            SessionId = "SESSION-001",
-            ReadAtUnixTimeSeconds = readAt.ToUnixTimeSeconds(),
-            ShotOkTotal = 101
-        });
+        db.PlcRawIntervals.Add(Raw("M16-01", 10, 100));
+        db.PlcRawIntervals.Add(Raw("M16-01", 10, 101));
 
         await Assert.ThrowsAnyAsync<DbUpdateException>(() => db.SaveChangesAsync());
     }
 
     [Fact]
-    public async Task Oee_raw_interval_repository_inserts_missing_and_reads_previous()
+    public async Task Oee_local_repository_inserts_missing_and_reads_previous_by_plc_period()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
         await using var db = CreateContext(connection);
         await db.Database.EnsureCreatedAsync();
         var repository = new EfCoreOeeRawIntervalRepository(db);
-        var first = DateTimeOffset.FromUnixTimeMilliseconds(10_000);
-        var second = DateTimeOffset.FromUnixTimeMilliseconds(15_000);
 
-        var insertedFirst = await repository.InsertMissingAsync([Raw("M16-01", first, 100)], CancellationToken.None);
-        var duplicate = await repository.InsertMissingAsync([Raw("M16-01", first, 101)], CancellationToken.None);
-        var insertedSecond = await repository.InsertMissingAsync([Raw("M16-01", second, 108)], CancellationToken.None);
-        var previous = await repository.GetPreviousInContextAsync("M16-01", "MO-001", "SESSION-001", 0, second.ToUnixTimeSeconds(), CancellationToken.None);
+        var insertedFirst = await repository.InsertMissingRawIntervalsAsync([Raw("M16-01", 10, 100)], CancellationToken.None);
+        var duplicate = await repository.InsertMissingRawIntervalsAsync([Raw("M16-01", 10, 101)], CancellationToken.None);
+        var insertedSecond = await repository.InsertMissingRawIntervalsAsync([Raw("M16-01", 15, 108)], CancellationToken.None);
+        var previous = await repository.GetPreviousRawInPeriodAsync("M16-01", 1, 0, 15, CancellationToken.None);
 
         Assert.Single(insertedFirst);
         Assert.Empty(duplicate);
@@ -108,49 +105,58 @@ public sealed class SqlitePersistenceTests
     }
 
     [Fact]
-    public async Task Oee_raw_interval_repository_reads_previous_only_in_same_production_session()
+    public async Task Local_pipeline_can_create_context_period_metric_product_metric_and_outbox()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
         await using var db = CreateContext(connection);
         await db.Database.EnsureCreatedAsync();
         var repository = new EfCoreOeeRawIntervalRepository(db);
-        var first = DateTimeOffset.FromUnixTimeSeconds(10);
-        var second = DateTimeOffset.FromUnixTimeSeconds(15);
+        var context = await repository.EnsureTestProductionContextAsync("M16-01", 10, CancellationToken.None);
+        await repository.EnsureTestProductionPeriodAsync(context, 10, CancellationToken.None);
+        await repository.InsertMissingRawIntervalsAsync([Raw("M16-01", 10, 100, runTimeTotalSec: 10)], CancellationToken.None);
+        var current = Raw("M16-01", 15, 108, runTimeTotalSec: 15);
+        await repository.InsertMissingRawIntervalsAsync([current], CancellationToken.None);
+        var store = new ProductionContextStore();
+        store.Replace(await repository.ListProductionContextsAsync(CancellationToken.None));
+        var builder = new OeeMetricBuilder(repository, store, Microsoft.Extensions.Logging.Abstractions.NullLogger<OeeMetricBuilder>.Instance);
 
-        await repository.InsertMissingAsync(
-            [
-                Raw("M16-01", first, 100, sessionId: "OLD-SESSION"),
-                Raw("M16-01", first, 200, sessionId: "SESSION-001")
-            ],
-            CancellationToken.None);
+        var result = await builder.BuildMetricsAsync([current], CancellationToken.None);
+        foreach (var metric in result.ProductionMetrics)
+        {
+            await repository.EnqueueOutboxAsync(new MesSyncOutboxMessage
+            {
+                Topic = $"metric.{metric.MetricType}",
+                SourceTable = "production_metric",
+                SourceId = $"{metric.MetricType}|{metric.PeriodId}|{metric.ProductId}|{metric.RunState}|{metric.StartAt}",
+                PayloadJson = "{}",
+                CreatedAt = metric.CreatedAt,
+                UpdatedAt = metric.UpdatedAt
+            }, CancellationToken.None);
+        }
 
-        var previous = await repository.GetPreviousInContextAsync("M16-01", "MO-001", "SESSION-001", 0, second.ToUnixTimeSeconds(), CancellationToken.None);
-
-        Assert.NotNull(previous);
-        Assert.Equal("SESSION-001", previous.SessionId);
-        Assert.Equal(200, previous.ShotOkTotal);
+        Assert.True(await db.ProductionMetrics.CountAsync() > 0);
+        Assert.Single(await db.ProductMetrics.ToListAsync());
+        Assert.True(await db.MesSyncOutboxMessages.CountAsync() > 0);
     }
 
     [Fact]
-    public async Task Mes_sync_outbox_repository_takes_pending_without_sqlite_datetimeoffset_translation_error()
+    public async Task Mes_sync_outbox_repository_takes_pending_without_sqlite_translation_error()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
         await using var db = CreateContext(connection);
         await db.Database.EnsureCreatedAsync();
         var repository = new EfCoreMesSyncOutboxRepository(db);
-        var now = DateTimeOffset.UtcNow;
         db.MesSyncOutboxMessages.AddRange(
-            OutboxMessage(MesSyncOutboxStatus.Failed, now.AddMinutes(1)),
-            OutboxMessage(MesSyncOutboxStatus.Pending, now.AddSeconds(-1)));
+            OutboxMessage("failed", 11),
+            OutboxMessage("pending", 10));
         await db.SaveChangesAsync();
 
-        var messages = await repository.TakePendingAsync(now.ToUnixTimeSeconds(), 10, CancellationToken.None);
+        var messages = await repository.TakePendingAsync(10, CancellationToken.None);
 
-        var message = Assert.Single(messages);
-        Assert.Equal(MesSyncOutboxStatus.InProgress, message.Status);
-        Assert.True(message.NextAttemptUnixTimeSeconds <= now.ToUnixTimeSeconds());
+        Assert.Equal(2, messages.Count);
+        Assert.All(messages, message => Assert.Equal("sending", message.Status));
     }
 
     [Fact]
@@ -175,29 +181,42 @@ public sealed class SqlitePersistenceTests
         return new GatewayDbContext(options);
     }
 
-    private static PlcRawInterval Raw(string machineCode, DateTimeOffset readAtUtc, long shotOkTotal, string sessionId = "SESSION-001") =>
+    private static async Task<HashSet<string>> ReadTableNamesAsync(SqliteConnection connection)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = "select name from sqlite_master where type = 'table'";
+        await using var reader = await command.ExecuteReaderAsync();
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        while (await reader.ReadAsync())
+        {
+            names.Add(reader.GetString(0));
+        }
+
+        return names;
+    }
+
+    private static PlcRawInterval Raw(string machine, long readAt, long shotOkTotal, long runTimeTotalSec = 0) =>
         new()
         {
-            MachineCode = machineCode,
-            ProductionOrderCode = "MO-001",
-            SessionId = sessionId,
-            ReadAtUnixTimeSeconds = readAtUtc.ToUnixTimeSeconds(),
+            Machine = machine,
+            ReadAt = readAt,
+            PlcPeriodIndex = 1,
+            RunState = "run",
             ShotOkTotal = shotOkTotal,
-            CreatedUnixTimeSeconds = readAtUtc.ToUnixTimeSeconds()
+            CycleTimeMs = 1000,
+            RunTimeTotalSec = runTimeTotalSec,
+            PeriodActive = 1
         };
 
-    private static MesSyncOutboxMessage OutboxMessage(MesSyncOutboxStatus status, DateTimeOffset nextAttemptAtUtc)
-    {
-        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        return new()
+    private static MesSyncOutboxMessage OutboxMessage(string status, long updatedAt) =>
+        new()
         {
             Topic = "metric.second",
-            Endpoint = "/secondly-production/sync",
-            PayloadJson = "{\"data\":[]}",
+            SourceTable = "production_metric",
+            SourceId = Guid.NewGuid().ToString("N"),
+            PayloadJson = "{}",
             Status = status,
-            NextAttemptUnixTimeSeconds = nextAttemptAtUtc.ToUnixTimeSeconds(),
-            CreatedUnixTimeSeconds = now,
-            UpdatedUnixTimeSeconds = now
+            CreatedAt = updatedAt,
+            UpdatedAt = updatedAt
         };
-    }
 }

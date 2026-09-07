@@ -1,7 +1,7 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using Rostek.Gateway.Application.Oee;
 using Rostek.Gateway.Domain.Entities;
-using Rostek.Gateway.Domain.Enums;
+using Rostek.Gateway.UnitTests.Fakes;
 using Xunit;
 
 namespace Rostek.Gateway.UnitTests;
@@ -11,252 +11,175 @@ public sealed class OeeMetricBuilderTests
     [Fact]
     public async Task Current_raw_without_previous_raw_does_not_build_metric()
     {
-        var now = DateTimeOffset.UtcNow;
-        var repository = new FakeOeeRawIntervalRepository();
+        var repository = CreateRepository("M16-01", periodStartAt: 10);
         var builder = CreateBuilder(repository);
 
-        var metrics = await builder.BuildMetricsAsync("GW-M16-01", [Raw("M16-01", now, shotOkTotal: 100)], Contexts("M16-01"), now.ToUnixTimeSeconds(), true, CancellationToken.None);
+        var result = await builder.BuildMetricsAsync([Raw("M16-01", 10, shotOkTotal: 100)], CancellationToken.None);
 
-        Assert.Empty(metrics);
+        Assert.Empty(result.ProductionMetrics);
     }
 
     [Fact]
-    public async Task Current_raw_with_previous_raw_builds_delta_metric()
+    public async Task Current_raw_with_previous_raw_builds_python_style_metrics()
     {
-        var first = DateTimeOffset.UtcNow;
-        var second = first.AddSeconds(5);
-        var repository = new FakeOeeRawIntervalRepository();
-        repository.RawIntervals.Add(Raw("M16-01", first, machineState: 1, shotOkTotal: 100, shotNgTotal: 10, cycleTimeMs: 1400, runTimeTotal: 10, stopTimeTotal: 2, errorTimeTotal: 1));
+        var repository = CreateRepository("M16-01", periodStartAt: 10);
+        repository.RawIntervals.Add(Raw("M16-01", 10, runState: "run", shotOkTotal: 100, shotNgTotal: 10, cycleTimeMs: 1000, runTimeTotalSec: 10, stopTimeTotalSec: 2, errorTimeTotalSec: 1));
         var builder = CreateBuilder(repository);
 
-        var metrics = await builder.BuildMetricsAsync(
-            "GW-M16-01",
-            [Raw("M16-01", second, machineState: 2, shotOkTotal: 108, shotNgTotal: 11, cycleTimeMs: 1500, runTimeTotal: 14, stopTimeTotal: 3, errorTimeTotal: 2)],
-            Contexts("M16-01", first),
-            second.ToUnixTimeSeconds(),
-            true,
+        var result = await builder.BuildMetricsAsync(
+            [Raw("M16-01", 15, runState: "run", shotOkTotal: 108, shotNgTotal: 11, cycleTimeMs: 1000, runTimeTotalSec: 14, stopTimeTotalSec: 3, errorTimeTotalSec: 2)],
             CancellationToken.None);
 
-        var metric = Assert.Single(metrics);
-        Assert.Equal("M16-01", metric.Machine);
-        Assert.Equal("MO-001", metric.OrderId);
-        Assert.Equal("CMD-001", metric.Tag);
-        Assert.Equal(9, metric.Total);
-        Assert.Equal(1, metric.NgQty);
-        Assert.Equal(4m, metric.RunTime);
-        Assert.Equal(1m, metric.StopTime);
-        Assert.Equal(1m, metric.ErrorTime);
-        Assert.Equal(6m, metric.ProdTime);
-        Assert.Equal(1.5m, metric.Cycle);
-        Assert.Equal(0.666667m, metric.Availability);
-        Assert.Equal(1m, metric.Performance);
-        Assert.Equal(0.888889m, metric.Quality);
-        Assert.Equal(0.592593m, metric.Oee);
+        var second = Assert.Single(result.ProductionMetrics, metric => metric.MetricType == OeeMetricTypes.Second);
+        Assert.Equal("M16-01", second.Machine);
+        Assert.Equal("TEST_ORDER", second.OrderId);
+        Assert.Equal("TEST_PRODUCT", second.ProductId);
+        Assert.Equal(8, second.TotalQty);
+        Assert.Equal(1, second.NgQty);
+        Assert.Equal(4, second.RunTimeSec);
+        Assert.Equal(1, second.StopTimeSec);
+        Assert.Equal(1, second.ErrorTimeSec);
+        Assert.Equal(6, second.ProdTimeSec);
+        Assert.InRange(second.Availability, 66.66m, 66.67m);
+        Assert.Equal(100m, second.Performance);
+        Assert.InRange(second.Quality, 88.88m, 88.89m);
+        Assert.InRange(second.Oee, 59.25m, 59.26m);
+    }
+
+    [Fact]
+    public async Task State_metric_uses_timestamp_duration_not_plc_time_delta()
+    {
+        var repository = CreateRepository("M16-01", periodStartAt: 10);
+        repository.RawIntervals.Add(Raw("M16-01", 10, runState: "stop", runTimeTotalSec: 100, stopTimeTotalSec: 20));
+        var builder = CreateBuilder(repository);
+
+        var result = await builder.BuildMetricsAsync(
+            [Raw("M16-01", 15, runState: "stop", runTimeTotalSec: 105, stopTimeTotalSec: 21)],
+            CancellationToken.None);
+
+        var state = Assert.Single(result.ProductionMetrics, metric => metric.MetricType == OeeMetricTypes.State);
+        Assert.Equal("stop", state.RunState);
+        Assert.Equal(0, state.RunTimeSec);
+        Assert.Equal(5, state.StopTimeSec);
+        Assert.Equal(0, state.ErrorTimeSec);
+    }
+
+    [Fact]
+    public async Task Performance_uses_actual_over_planned_with_cycle_time_from_product_json()
+    {
+        var repository = CreateRepository(
+            "M16-01",
+            periodStartAt: 10,
+            productsJson: """[{"product_id":"TEST_PRODUCT","gain":1.0,"cycle_time":2.0,"target":0}]""");
+        repository.RawIntervals.Add(Raw("M16-01", 10, shotOkTotal: 100, shotNgTotal: 10, runTimeTotalSec: 0));
+        var builder = CreateBuilder(repository);
+
+        var result = await builder.BuildMetricsAsync(
+            [Raw("M16-01", 15, shotOkTotal: 104, shotNgTotal: 11, runTimeTotalSec: 10)],
+            CancellationToken.None);
+
+        var second = Assert.Single(result.ProductionMetrics, metric => metric.MetricType == OeeMetricTypes.Second);
+        Assert.Equal(4, second.TotalQty);
+        Assert.Equal(1, second.NgQty);
+        Assert.Equal(10, second.ProdTimeSec);
+        Assert.Equal(5m, second.PlanQty);
+        Assert.Equal(100m, second.Performance);
     }
 
     [Fact]
     public async Task Counter_reset_produces_zero_delta_like_python()
     {
-        var first = DateTimeOffset.UtcNow;
-        var second = first.AddSeconds(5);
-        var repository = new FakeOeeRawIntervalRepository();
-        repository.RawIntervals.Add(Raw("M16-01", first, shotOkTotal: 100));
+        var repository = CreateRepository("M16-01", periodStartAt: 10);
+        repository.RawIntervals.Add(Raw("M16-01", 10, shotOkTotal: 100));
         var builder = CreateBuilder(repository);
 
-        var metrics = await builder.BuildMetricsAsync(
-            "GW-M16-01",
-            [Raw("M16-01", second, shotOkTotal: 90)],
-            Contexts("M16-01"),
-            second.ToUnixTimeSeconds(),
-            true,
-            CancellationToken.None);
+        var result = await builder.BuildMetricsAsync([Raw("M16-01", 15, shotOkTotal: 90)], CancellationToken.None);
 
-        Assert.Equal(0, Assert.Single(metrics).Total);
+        var second = Assert.Single(result.ProductionMetrics, metric => metric.MetricType == OeeMetricTypes.Second);
+        Assert.Equal(0, second.TotalQty);
     }
 
     [Fact]
-    public async Task Machine_without_active_context_is_skipped_when_context_is_required()
+    public async Task Raw_without_active_context_is_skipped()
     {
-        var first = DateTimeOffset.UtcNow;
-        var second = first.AddSeconds(5);
-        var repository = new FakeOeeRawIntervalRepository();
-        repository.RawIntervals.Add(Raw("M16-01", first, shotOkTotal: 100));
-        var builder = CreateBuilder(repository);
+        var repository = new FakeOeeLocalRepository();
+        repository.RawIntervals.Add(Raw("M16-01", 10, shotOkTotal: 100));
+        var builder = new OeeMetricBuilder(repository, new ProductionContextStore(), NullLogger<OeeMetricBuilder>.Instance);
 
-        var metrics = await builder.BuildMetricsAsync("GW-M16-01", [Raw("M16-01", second, shotOkTotal: 110)], new Dictionary<string, ProductionContext>(), second.ToUnixTimeSeconds(), true, CancellationToken.None);
+        var result = await builder.BuildMetricsAsync([Raw("M16-01", 15, shotOkTotal: 110)], CancellationToken.None);
 
-        Assert.Empty(metrics);
+        Assert.Empty(result.ProductionMetrics);
     }
 
-    [Fact]
-    public async Task Machine_without_active_context_builds_test_metric_when_context_is_not_required()
+    private static OeeMetricBuilder CreateBuilder(FakeOeeLocalRepository repository) =>
+        new(repository, LoadedStore(repository), NullLogger<OeeMetricBuilder>.Instance);
+
+    private static ProductionContextStore LoadedStore(FakeOeeLocalRepository repository)
     {
-        var first = DateTimeOffset.UtcNow;
-        var second = first.AddSeconds(5);
-        var repository = new FakeOeeRawIntervalRepository();
-        repository.RawIntervals.Add(Raw("M16-01", first, shotOkTotal: 100, shotNgTotal: 3, runTimeTotal: 1, productionOrderCode: OeeTestProductionContext.ProductionOrderCode, sessionId: OeeTestProductionContext.SessionId));
-        var builder = CreateBuilder(repository);
-
-        var metrics = await builder.BuildMetricsAsync(
-            "GW-M16-01",
-            [Raw("M16-01", second, shotOkTotal: 110, shotNgTotal: 4, runTimeTotal: 6, productionOrderCode: OeeTestProductionContext.ProductionOrderCode, sessionId: OeeTestProductionContext.SessionId)],
-            new Dictionary<string, ProductionContext>(),
-            second.ToUnixTimeSeconds(),
-            false,
-            CancellationToken.None);
-
-        var metric = Assert.Single(metrics);
-        Assert.Equal("Started", metric.Mode);
-        Assert.Equal("M16-01", metric.Machine);
-        Assert.Equal(OeeTestProductionContext.ProductionOrderCode, metric.OrderId);
-        Assert.Equal(OeeTestProductionContext.SessionId, metric.SessionId);
-        Assert.Equal("TEST", metric.Tag);
-        Assert.Equal(0, metric.StartAt);
-        Assert.Equal(second.ToUnixTimeSeconds(), metric.EndAt);
-        Assert.Equal(11, metric.Total);
-        Assert.Equal(1, metric.NgQty);
+        var store = new ProductionContextStore();
+        store.Replace(repository.Contexts.ToDictionary(context => context.Machine, StringComparer.OrdinalIgnoreCase));
+        return store;
     }
 
-    [Fact]
-    public async Task Stopped_context_is_skipped_when_context_is_required()
+    private static FakeOeeLocalRepository CreateRepository(string machine, long periodStartAt, string? productsJson = null)
     {
-        var first = DateTimeOffset.UtcNow;
-        var second = first.AddSeconds(5);
-        var repository = new FakeOeeRawIntervalRepository();
-        repository.RawIntervals.Add(Raw("M16-01", first, shotOkTotal: 100));
-        var builder = CreateBuilder(repository);
-
-        var contexts = Contexts("M16-01").ToDictionary();
-        contexts["M16-01"].Status = ProductionContextStatus.Stopped;
-
-        var metrics = await builder.BuildMetricsAsync(
-            "GW-M16-01",
-            [Raw("M16-01", second, shotOkTotal: 110)],
-            contexts,
-            second.ToUnixTimeSeconds(),
-            true,
-            CancellationToken.None);
-
-        Assert.Empty(metrics);
-    }
-
-    [Fact]
-    public async Task Previous_raw_from_different_session_is_not_used()
-    {
-        var first = DateTimeOffset.UtcNow;
-        var second = first.AddSeconds(5);
-        var repository = new FakeOeeRawIntervalRepository();
-        repository.RawIntervals.Add(Raw("M16-01", first, shotOkTotal: 100, sessionId: "OLD-SESSION"));
-        var builder = CreateBuilder(repository);
-
-        var metrics = await builder.BuildMetricsAsync(
-            "GW-M16-01",
-            [Raw("M16-01", second, shotOkTotal: 110)],
-            Contexts("M16-01"),
-            second.ToUnixTimeSeconds(),
-            true,
-            CancellationToken.None);
-
-        Assert.Empty(metrics);
-    }
-
-    [Fact]
-    public async Task Non_adjacent_previous_raw_builds_delta_like_python()
-    {
-        var first = DateTimeOffset.UtcNow;
-        var second = first.AddSeconds(565);
-        var repository = new FakeOeeRawIntervalRepository();
-        repository.RawIntervals.Add(Raw("M16-01", first, shotOkTotal: 100, runTimeTotal: 2107, productionOrderCode: OeeTestProductionContext.ProductionOrderCode, sessionId: OeeTestProductionContext.SessionId));
-        var builder = CreateBuilder(repository);
-
-        var metrics = await builder.BuildMetricsAsync(
-            "GW-M16-01",
-            [Raw("M16-01", second, shotOkTotal: 110, runTimeTotal: 2674, productionOrderCode: OeeTestProductionContext.ProductionOrderCode, sessionId: OeeTestProductionContext.SessionId)],
-            new Dictionary<string, ProductionContext>(),
-            second.ToUnixTimeSeconds(),
-            false,
-            CancellationToken.None);
-
-        var metric = Assert.Single(metrics);
-        Assert.Equal(10, metric.Total);
-        Assert.Equal(567m, metric.RunTime);
-    }
-
-    private static OeeMetricBuilder CreateBuilder(FakeOeeRawIntervalRepository repository) =>
-        new(repository, NullLogger<OeeMetricBuilder>.Instance);
-
-    private static IReadOnlyDictionary<string, ProductionContext> Contexts(string machineCode, DateTimeOffset? startAt = null) =>
-        new Dictionary<string, ProductionContext>(StringComparer.OrdinalIgnoreCase)
+        var repository = new FakeOeeLocalRepository();
+        var context = new ProductionContext
         {
-            [machineCode] = new()
-            {
-                MachineCode = machineCode,
-                CommandCode = "CMD-001",
-                Status = ProductionContextStatus.Started,
-                ProductionOrderCode = "MO-001",
-                SessionId = "SESSION-001",
-                StartedUnixTimeSeconds = startAt?.ToUnixTimeSeconds()
-            }
+            Machine = machine,
+            Mode = OeeTestProductionContext.Mode,
+            OrderId = OeeTestProductionContext.OrderId,
+            ServerOrderId = OeeTestProductionContext.ServerOrderId,
+            ActivePeriodId = $"{machine}-{OeeTestProductionContext.PeriodId}",
+            CurrentPlcPeriodIndex = OeeTestProductionContext.PlcPeriodIndex,
+            ProductsJson = productsJson ?? OeeTestProductionContext.ProductsJson,
+            TagsJson = OeeTestProductionContext.TagsJson,
+            ExtraJson = OeeTestProductionContext.ExtraJson,
+            Status = "active",
+            UpdatedAt = periodStartAt
         };
+        repository.Contexts.Add(context);
+        repository.Periods.Add(new ProductionPeriod
+        {
+            PeriodId = context.ActivePeriodId,
+            Machine = machine,
+            PlcPeriodIndex = context.CurrentPlcPeriodIndex,
+            Mode = context.Mode,
+            OrderId = context.OrderId,
+            ServerOrderId = context.ServerOrderId,
+            ProductsJson = context.ProductsJson,
+            TagsJson = context.TagsJson,
+            ExtraJson = context.ExtraJson,
+            StartAt = periodStartAt,
+            Status = "active",
+            CreatedAt = periodStartAt,
+            UpdatedAt = periodStartAt
+        });
+        return repository;
+    }
 
     private static PlcRawInterval Raw(
-        string machineCode,
-        DateTimeOffset readAtUtc,
-        int? machineState = null,
-        long? shotOkTotal = null,
-        long? shotNgTotal = null,
-        int? cycleTimeMs = null,
-        long? runTimeTotal = null,
-        long? stopTimeTotal = null,
-        long? errorTimeTotal = null,
-        string productionOrderCode = "MO-001",
-        string sessionId = "SESSION-001") =>
+        string machine,
+        long readAt,
+        string runState = "run",
+        long shotOkTotal = 0,
+        long shotNgTotal = 0,
+        int cycleTimeMs = 1000,
+        long runTimeTotalSec = 0,
+        long stopTimeTotalSec = 0,
+        long errorTimeTotalSec = 0) =>
         new()
         {
-            MachineCode = machineCode,
-            ProductionOrderCode = productionOrderCode,
-            SessionId = sessionId,
-            ReadAtUnixTimeSeconds = readAtUtc.ToUnixTimeSeconds(),
-            MachineState = machineState,
+            Machine = machine,
+            ReadAt = readAt,
+            PlcPeriodIndex = OeeTestProductionContext.PlcPeriodIndex,
+            RunState = runState,
             ShotOkTotal = shotOkTotal,
             ShotNgTotal = shotNgTotal,
             CycleTimeMs = cycleTimeMs,
-            RunTimeTotal = runTimeTotal,
-            StopTimeTotal = stopTimeTotal,
-            ErrorTimeTotal = errorTimeTotal,
-            CreatedUnixTimeSeconds = readAtUtc.ToUnixTimeSeconds()
+            RunTimeTotalSec = runTimeTotalSec,
+            StopTimeTotalSec = stopTimeTotalSec,
+            ErrorTimeTotalSec = errorTimeTotalSec,
+            PeriodActive = 1
         };
-
-    private sealed class FakeOeeRawIntervalRepository : IOeeRawIntervalRepository
-    {
-        public List<PlcRawInterval> RawIntervals { get; } = [];
-
-        public Task<IReadOnlyList<PlcRawInterval>> InsertMissingAsync(IReadOnlyCollection<PlcRawInterval> rawIntervals, CancellationToken cancellationToken)
-        {
-            var inserted = rawIntervals
-                .Where(raw => !RawIntervals.Any(existing =>
-                    existing.MachineCode.Equals(raw.MachineCode, StringComparison.OrdinalIgnoreCase) &&
-                    existing.ReadAtUnixTimeSeconds == raw.ReadAtUnixTimeSeconds))
-                .ToList();
-            RawIntervals.AddRange(inserted);
-            return Task.FromResult<IReadOnlyList<PlcRawInterval>>(inserted);
-        }
-
-        public Task<PlcRawInterval?> GetPreviousInContextAsync(
-            string machineCode,
-            string productionOrderCode,
-            string sessionId,
-            long contextStartedUnixTimeSeconds,
-            long beforeReadAtUnixTimeSeconds,
-            CancellationToken cancellationToken) =>
-            Task.FromResult(RawIntervals
-                .Where(raw =>
-                    raw.MachineCode.Equals(machineCode, StringComparison.OrdinalIgnoreCase) &&
-                    raw.ProductionOrderCode.Equals(productionOrderCode, StringComparison.OrdinalIgnoreCase) &&
-                    raw.SessionId.Equals(sessionId, StringComparison.OrdinalIgnoreCase) &&
-                    raw.ReadAtUnixTimeSeconds >= contextStartedUnixTimeSeconds &&
-                    raw.ReadAtUnixTimeSeconds < beforeReadAtUnixTimeSeconds)
-                .OrderByDescending(raw => raw.ReadAtUnixTimeSeconds)
-                .FirstOrDefault());
-    }
 }

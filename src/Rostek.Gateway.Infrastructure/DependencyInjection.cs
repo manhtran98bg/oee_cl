@@ -18,7 +18,7 @@ public static class DependencyInjection
         services.AddScoped<GatewayDbInitializer>();
         services.AddScoped<IConfigRepository, EfCoreConfigRepository>();
         services.AddScoped<IMesSyncOutboxRepository, EfCoreMesSyncOutboxRepository>();
-        services.AddScoped<IOeeRawIntervalRepository, EfCoreOeeRawIntervalRepository>();
+        services.AddScoped<IOeeLocalRepository, EfCoreOeeRawIntervalRepository>();
         services.AddHttpClient();
         services.AddScoped<IMesServerClient, MesServerClient>();
         return services;

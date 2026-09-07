@@ -2,7 +2,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Rostek.Gateway.Application.Oee;
 using Rostek.Gateway.Contracts.Machines;
 using Rostek.Gateway.Contracts.Runtime;
-using Rostek.Gateway.Domain.Entities;
+using Rostek.Gateway.UnitTests.Fakes;
 using Xunit;
 
 namespace Rostek.Gateway.UnitTests;
@@ -10,41 +10,59 @@ namespace Rostek.Gateway.UnitTests;
 public sealed class OeeRawIntervalServiceTests
 {
     [Fact]
-    public async Task Capture_maps_latest_snapshot_to_aligned_raw_interval()
+    public async Task Capture_maps_latest_snapshot_to_python_raw_interval()
     {
-        var timestamp = DateTimeOffset.FromUnixTimeSeconds(10);
+        var timestamp = DateTimeOffset.FromUnixTimeSeconds(12);
         var reader = new MutableMachineValueReader();
-        var repository = new FakeOeeRawIntervalRepository();
+        var repository = new FakeOeeLocalRepository();
         var service = CreateService(reader, repository);
-        reader.SetSnapshots([CreateSnapshot("M16-01", timestamp, machineState: 1, shotOkCount: 100, shotNgCount: 2, cycleTimeMs: 1500, runTimeTotal: 10000, stopTimeTotal: 2000, errorTimeTotal: 500)]);
+        reader.SetSnapshots([CreateSnapshot("M16-01", timestamp, machineState: 1, shotOkCount: 100, shotNgCount: 2, cycleTimeMs: 1500, runTimeTotal: 10, stopTimeTotal: 2, errorTimeTotal: 1)]);
 
-        var inserted = await service.CaptureAsync(TimeSpan.FromSeconds(5), TestContexts("M16-01"), true, CancellationToken.None);
+        var inserted = await service.CaptureAsync(TimeSpan.FromSeconds(5), requireProductionContext: false, CancellationToken.None);
 
         var raw = Assert.Single(inserted);
-        Assert.Equal("M16-01", raw.MachineCode);
-        Assert.Equal("MO-001", raw.ProductionOrderCode);
-        Assert.Equal("SESSION-001", raw.SessionId);
-        Assert.Equal(10, raw.ReadAtUnixTimeSeconds);
-        Assert.Equal(1, raw.MachineState);
+        Assert.Equal("M16-01", raw.Machine);
+        Assert.Equal(10, raw.ReadAt);
+        Assert.Equal(1, raw.PlcPeriodIndex);
+        Assert.Equal("run", raw.RunState);
         Assert.Equal(100, raw.ShotOkTotal);
         Assert.Equal(2, raw.ShotNgTotal);
         Assert.Equal(1500, raw.CycleTimeMs);
-        Assert.Equal(10000, raw.RunTimeTotal);
-        Assert.Equal(2000, raw.StopTimeTotal);
-        Assert.Equal(500, raw.ErrorTimeTotal);
+        Assert.Equal(10, raw.RunTimeTotalSec);
+        Assert.Equal(2, raw.StopTimeTotalSec);
+        Assert.Equal(1, raw.ErrorTimeTotalSec);
+        Assert.Single(repository.Contexts);
+        Assert.Single(repository.Periods);
     }
 
     [Fact]
-    public async Task Capture_skips_offline_snapshot()
+    public async Task Capture_skips_without_context_when_required()
     {
         var reader = new MutableMachineValueReader();
-        var repository = new FakeOeeRawIntervalRepository();
+        var repository = new FakeOeeLocalRepository();
         var service = CreateService(reader, repository);
-        reader.SetSnapshots([CreateSnapshot("M16-01", DateTimeOffset.UtcNow, online: false, shotOkCount: 100)]);
+        reader.SetSnapshots([CreateSnapshot("M16-01", DateTimeOffset.UtcNow, shotOkCount: 100)]);
 
-        var inserted = await service.CaptureAsync(TimeSpan.FromSeconds(5), TestContexts("M16-01"), true, CancellationToken.None);
+        var inserted = await service.CaptureAsync(TimeSpan.FromSeconds(5), requireProductionContext: true, CancellationToken.None);
 
         Assert.Empty(inserted);
+        Assert.Empty(repository.Contexts);
+    }
+
+    [Fact]
+    public async Task Capture_uses_production_context_loaded_in_memory_when_required()
+    {
+        var reader = new MutableMachineValueReader();
+        var repository = new FakeOeeLocalRepository();
+        var store = new ProductionContextStore();
+        await repository.EnsureTestProductionContextAsync("M16-01", 10, CancellationToken.None);
+        store.Replace(await repository.ListProductionContextsAsync(CancellationToken.None));
+        var service = CreateService(reader, repository, store);
+        reader.SetSnapshots([CreateSnapshot("M16-01", DateTimeOffset.FromUnixTimeSeconds(10), shotOkCount: 100)]);
+
+        var inserted = await service.CaptureAsync(TimeSpan.FromSeconds(5), requireProductionContext: true, CancellationToken.None);
+
+        Assert.Single(inserted);
     }
 
     [Fact]
@@ -52,32 +70,22 @@ public sealed class OeeRawIntervalServiceTests
     {
         var timestamp = DateTimeOffset.FromUnixTimeSeconds(10);
         var reader = new MutableMachineValueReader();
-        var repository = new FakeOeeRawIntervalRepository();
+        var repository = new FakeOeeLocalRepository();
         var service = CreateService(reader, repository);
         reader.SetSnapshots([CreateSnapshot("M16-01", timestamp, shotOkCount: 100)]);
-        await service.CaptureAsync(TimeSpan.FromSeconds(5), TestContexts("M16-01"), true, CancellationToken.None);
+        await service.CaptureAsync(TimeSpan.FromSeconds(5), false, CancellationToken.None);
 
-        var second = await service.CaptureAsync(TimeSpan.FromSeconds(5), TestContexts("M16-01"), true, CancellationToken.None);
+        var second = await service.CaptureAsync(TimeSpan.FromSeconds(5), false, CancellationToken.None);
 
         Assert.Empty(second);
         Assert.Single(repository.RawIntervals);
     }
 
-    private static OeeRawIntervalService CreateService(MutableMachineValueReader reader, FakeOeeRawIntervalRepository repository) =>
-        new(reader, repository, NullLogger<OeeRawIntervalService>.Instance);
-
-    private static IReadOnlyDictionary<string, ProductionContext> TestContexts(string machineCode) =>
-        new Dictionary<string, ProductionContext>(StringComparer.OrdinalIgnoreCase)
-        {
-            [machineCode] = new()
-            {
-                MachineCode = machineCode,
-                CommandCode = "CMD-001",
-                ProductionOrderCode = "MO-001",
-                SessionId = "SESSION-001",
-                Status = Domain.Enums.ProductionContextStatus.Started
-            }
-        };
+    private static OeeRawIntervalService CreateService(
+        MutableMachineValueReader reader,
+        FakeOeeLocalRepository repository,
+        ProductionContextStore? store = null) =>
+        new(reader, repository, store ?? new ProductionContextStore(), NullLogger<OeeRawIntervalService>.Instance);
 
     private static MachineValueSnapshotDto CreateSnapshot(
         string machineCode,
@@ -123,32 +131,5 @@ public sealed class OeeRawIntervalServiceTests
 
         public MachineValueSnapshotDto? GetSnapshot(string machineCode) =>
             _snapshots.FirstOrDefault(snapshot => snapshot.MachineCode.Equals(machineCode, StringComparison.OrdinalIgnoreCase));
-    }
-
-    private sealed class FakeOeeRawIntervalRepository : IOeeRawIntervalRepository
-    {
-        public List<PlcRawInterval> RawIntervals { get; } = [];
-
-        public Task<IReadOnlyList<PlcRawInterval>> InsertMissingAsync(IReadOnlyCollection<PlcRawInterval> rawIntervals, CancellationToken cancellationToken)
-        {
-            var inserted = rawIntervals
-                .Where(raw => !RawIntervals.Any(existing =>
-                    existing.MachineCode.Equals(raw.MachineCode, StringComparison.OrdinalIgnoreCase) &&
-                    existing.ProductionOrderCode.Equals(raw.ProductionOrderCode, StringComparison.OrdinalIgnoreCase) &&
-                    existing.SessionId.Equals(raw.SessionId, StringComparison.OrdinalIgnoreCase) &&
-                    existing.ReadAtUnixTimeSeconds == raw.ReadAtUnixTimeSeconds))
-                .ToList();
-            RawIntervals.AddRange(inserted);
-            return Task.FromResult<IReadOnlyList<PlcRawInterval>>(inserted);
-        }
-
-        public Task<PlcRawInterval?> GetPreviousInContextAsync(
-            string machineCode,
-            string productionOrderCode,
-            string sessionId,
-            long contextStartedUnixTimeSeconds,
-            long beforeReadAtUnixTimeSeconds,
-            CancellationToken cancellationToken) =>
-            Task.FromResult<PlcRawInterval?>(null);
     }
 }
