@@ -13,6 +13,7 @@ public sealed class MesSyncOptions
     public int RetryCount { get; set; } = 3;
     public int BatchSize { get; set; } = 100;
     public int SyncIntervalMs { get; set; } = 5000;
+    public bool RequireProductionContext { get; set; }
 }
 
 public static class MesSyncTopics
@@ -31,6 +32,7 @@ public sealed record ProductionCommandRequest(
     [property: JsonPropertyName("action")] string Action,
     [property: JsonPropertyName("occurred_at_unix_seconds")] long? OccurredAtUnixTimeSeconds,
     [property: JsonPropertyName("production_order_code")] string? ProductionOrderCode,
+    [property: JsonPropertyName("session_id")] string? SessionId,
     [property: JsonPropertyName("operator_code")] string? OperatorCode,
     [property: JsonPropertyName("reason_code")] string? ReasonCode,
     [property: JsonPropertyName("note")] string? Note);

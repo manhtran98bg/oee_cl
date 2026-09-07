@@ -113,6 +113,7 @@ public sealed class GatewayDbContext(DbContextOptions<GatewayDbContext> options)
             entity.Property(context => context.CommandCode).HasMaxLength(100).IsRequired();
             entity.Property(context => context.Status).HasConversion<string>().HasMaxLength(50).IsRequired();
             entity.Property(context => context.ProductionOrderCode).HasMaxLength(100);
+            entity.Property(context => context.SessionId).HasMaxLength(100).IsRequired();
             entity.Property(context => context.OperatorCode).HasMaxLength(100);
             entity.Property(context => context.ReasonCode).HasMaxLength(100);
             entity.HasIndex(context => context.MachineCode).IsUnique();
@@ -138,7 +139,9 @@ public sealed class GatewayDbContext(DbContextOptions<GatewayDbContext> options)
             entity.ToTable("PlcRawIntervals");
             entity.HasKey(raw => raw.Id);
             entity.Property(raw => raw.MachineCode).HasMaxLength(100).IsRequired();
-            entity.HasIndex(raw => new { raw.MachineCode, raw.ReadAtUnixTimeSeconds }).IsUnique();
+            entity.Property(raw => raw.ProductionOrderCode).HasMaxLength(100).IsRequired();
+            entity.Property(raw => raw.SessionId).HasMaxLength(100).IsRequired();
+            entity.HasIndex(raw => new { raw.MachineCode, raw.ProductionOrderCode, raw.SessionId, raw.ReadAtUnixTimeSeconds }).IsUnique();
             entity.HasIndex(raw => raw.ReadAtUnixTimeSeconds);
         });
     }

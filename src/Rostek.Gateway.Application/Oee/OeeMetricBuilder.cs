@@ -11,6 +11,7 @@ public interface IOeeMetricBuilder
         IReadOnlyCollection<PlcRawInterval> currentRawIntervals,
         IReadOnlyDictionary<string, ProductionContext> productionContexts,
         long nowUnixTimeSeconds,
+        bool requireProductionContext,
         CancellationToken cancellationToken);
 }
 
@@ -25,6 +26,7 @@ public sealed class OeeMetricBuilder(
         IReadOnlyCollection<PlcRawInterval> currentRawIntervals,
         IReadOnlyDictionary<string, ProductionContext> productionContexts,
         long nowUnixTimeSeconds,
+        bool requireProductionContext,
         CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(gatewayId);
@@ -32,13 +34,22 @@ public sealed class OeeMetricBuilder(
         var metrics = new List<OeeMetric>();
         foreach (var current in currentRawIntervals.OrderBy(raw => raw.MachineCode).ThenBy(raw => raw.ReadAtUnixTimeSeconds))
         {
-            if (!productionContexts.TryGetValue(current.MachineCode, out var context) ||
-                context.Status == ProductionContextStatus.Stopped)
+            var context = ResolveProductionContext(current, productionContexts, requireProductionContext);
+            if (context is null)
             {
                 continue;
             }
 
-            var previous = await repository.GetPreviousAsync(current.MachineCode, current.ReadAtUnixTimeSeconds, cancellationToken);
+            var orderId = Normalize(context.ProductionOrderCode);
+            var sessionId = Normalize(context.SessionId);
+            var contextStartedUnixTimeSeconds = context.StartedUnixTimeSeconds ?? 0;
+            var previous = await repository.GetPreviousInContextAsync(
+                current.MachineCode,
+                orderId,
+                sessionId,
+                contextStartedUnixTimeSeconds,
+                current.ReadAtUnixTimeSeconds,
+                cancellationToken);
             if (previous is null)
             {
                 logger.LogDebug("No previous raw interval found for machine {MachineCode} at unix timestamp {ReadAtUnixTimeSeconds}", current.MachineCode, current.ReadAtUnixTimeSeconds);
@@ -52,9 +63,42 @@ public sealed class OeeMetricBuilder(
         return metrics;
     }
 
+    private static ProductionContext? ResolveProductionContext(
+        PlcRawInterval current,
+        IReadOnlyDictionary<string, ProductionContext> productionContexts,
+        bool requireProductionContext)
+    {
+        if (productionContexts.TryGetValue(current.MachineCode, out var context))
+        {
+            if (context.Status == ProductionContextStatus.Stopped ||
+                string.IsNullOrWhiteSpace(context.ProductionOrderCode) ||
+                string.IsNullOrWhiteSpace(context.SessionId))
+            {
+                return null;
+            }
+
+            return context;
+        }
+
+        return requireProductionContext
+            ? null
+            : new ProductionContext
+            {
+                MachineCode = current.MachineCode,
+                CommandCode = OeeTestProductionContext.CommandCode,
+                ProductionOrderCode = OeeTestProductionContext.ProductionOrderCode,
+                SessionId = OeeTestProductionContext.SessionId,
+                Status = ProductionContextStatus.Started,
+                StartedUnixTimeSeconds = 0,
+                UpdatedUnixTimeSeconds = current.ReadAtUnixTimeSeconds
+            };
+    }
+
     private static OeeDeltaSample CreateDeltaSample(PlcRawInterval previous, PlcRawInterval current) =>
         new(
             current.MachineCode,
+            current.ProductionOrderCode,
+            current.SessionId,
             current.ReadAtUnixTimeSeconds,
             current.MachineState,
             CalculateDelta(previous.ShotOkTotal, current.ShotOkTotal),
@@ -67,11 +111,11 @@ public sealed class OeeMetricBuilder(
     private static OeeMetric CreateMetric(string gatewayId, ProductionContext context, OeeDeltaSample delta, long nowUnixTimeSeconds)
     {
         var total = AddNullable(delta.ShotOkDelta, delta.ShotNgDelta);
-        var runTimeSeconds = ToSeconds(delta.RunTimeDeltaMs);
-        var stopTimeSeconds = ToSeconds(delta.StopTimeDeltaMs);
-        var errorTimeSeconds = ToSeconds(delta.ErrorTimeDeltaMs);
+        var runTimeSeconds = ToDecimal(delta.RunTimeDeltaSeconds);
+        var stopTimeSeconds = ToDecimal(delta.StopTimeDeltaSeconds);
+        var errorTimeSeconds = ToDecimal(delta.ErrorTimeDeltaSeconds);
         var prodTimeSeconds = AddNullable(runTimeSeconds, stopTimeSeconds, errorTimeSeconds);
-        var cycleSeconds = ToSeconds(delta.CycleTimeMs);
+        var cycleSeconds = MillisecondsToSeconds(delta.CycleTimeMs);
 
         var availability = Divide(runTimeSeconds, prodTimeSeconds);
         decimal? quality = total is > 0 && delta.ShotOkDelta is int ok ? Divide(ok, total.Value) : null;
@@ -87,6 +131,7 @@ public sealed class OeeMetricBuilder(
             Machine: delta.MachineCode,
             Version: MetricVersion,
             OrderId: context.ProductionOrderCode,
+            SessionId: context.SessionId,
             Tag: context.CommandCode,
             Total: total,
             NgQty: delta.ShotNgDelta,
@@ -127,7 +172,10 @@ public sealed class OeeMetricBuilder(
     private static decimal? AddNullable(params decimal?[] values) =>
         values.All(value => value is null) ? null : values.Sum(value => value ?? 0);
 
-    private static decimal? ToSeconds(int? milliseconds) =>
+    private static decimal? ToDecimal(int? seconds) =>
+        seconds is null ? null : seconds.Value;
+
+    private static decimal? MillisecondsToSeconds(int? milliseconds) =>
         milliseconds is null ? null : Math.Round(milliseconds.Value / 1000m, 3, MidpointRounding.AwayFromZero);
 
     private static decimal? Divide(decimal? numerator, decimal? denominator) =>
@@ -138,4 +186,7 @@ public sealed class OeeMetricBuilder(
 
     private static decimal ClampRatio(decimal value) =>
         Math.Min(1m, Math.Max(0m, Math.Round(value, 6, MidpointRounding.AwayFromZero)));
+
+    private static string Normalize(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim();
 }

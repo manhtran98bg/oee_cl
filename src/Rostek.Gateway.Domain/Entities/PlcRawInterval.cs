@@ -4,6 +4,8 @@ public sealed class PlcRawInterval
 {
     public long Id { get; set; }
     public string MachineCode { get; set; } = string.Empty;
+    public string ProductionOrderCode { get; set; } = string.Empty;
+    public string SessionId { get; set; } = string.Empty;
     public long ReadAtUnixTimeSeconds { get; set; }
     public int? MachineState { get; set; }
     public long? ShotOkTotal { get; set; }

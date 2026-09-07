@@ -13,8 +13,17 @@ public static class OeeSignalCodes
     public const string ErrorTimeTotal = "ERROR_TIME_TOTAL";
 }
 
+public static class OeeTestProductionContext
+{
+    public const string CommandCode = "TEST";
+    public const string ProductionOrderCode = "TEST_ORDER";
+    public const string SessionId = "TEST_SESSION";
+}
+
 public sealed record OeeRawSample(
     string MachineCode,
+    string ProductionOrderCode,
+    string SessionId,
     long SampledAtUnixTimeSeconds,
     int? MachineState,
     long? ShotOkCount,
@@ -26,20 +35,23 @@ public sealed record OeeRawSample(
 
 public sealed record OeeDeltaSample(
     string MachineCode,
+    string ProductionOrderCode,
+    string SessionId,
     long SampledAtUnixTimeSeconds,
     int? MachineState,
     int? ShotOkDelta,
     int? ShotNgDelta,
     int? CycleTimeMs,
-    int? RunTimeDeltaMs,
-    int? StopTimeDeltaMs,
-    int? ErrorTimeDeltaMs);
+    int? RunTimeDeltaSeconds,
+    int? StopTimeDeltaSeconds,
+    int? ErrorTimeDeltaSeconds);
 
 public sealed record OeeMetric(
     [property: JsonPropertyName("mode")] string Mode,
     [property: JsonPropertyName("machine")] string Machine,
     [property: JsonPropertyName("version")] string Version,
     [property: JsonPropertyName("order_id")] string? OrderId,
+    [property: JsonPropertyName("session_id")] string? SessionId,
     [property: JsonPropertyName("tag")] string? Tag,
     [property: JsonPropertyName("total")] int? Total,
     [property: JsonPropertyName("ng_qty")] int? NgQty,

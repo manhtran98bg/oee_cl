@@ -9,6 +9,7 @@ public sealed class ProductionContext
     public string CommandCode { get; set; } = string.Empty;
     public ProductionContextStatus Status { get; set; } = ProductionContextStatus.Stopped;
     public string? ProductionOrderCode { get; set; }
+    public string SessionId { get; set; } = string.Empty;
     public string? OperatorCode { get; set; }
     public string? ReasonCode { get; set; }
     public string? Note { get; set; }

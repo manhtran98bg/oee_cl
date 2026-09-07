@@ -3,18 +3,29 @@ using Microsoft.Extensions.Logging;
 using Rostek.Gateway.Contracts.Machines;
 using Rostek.Gateway.Contracts.Runtime;
 using Rostek.Gateway.Domain.Entities;
+using Rostek.Gateway.Domain.Enums;
 
 namespace Rostek.Gateway.Application.Oee;
 
 public interface IOeeRawIntervalService
 {
-    Task<IReadOnlyList<PlcRawInterval>> CaptureAsync(TimeSpan interval, CancellationToken cancellationToken);
+    Task<IReadOnlyList<PlcRawInterval>> CaptureAsync(
+        TimeSpan interval,
+        IReadOnlyDictionary<string, ProductionContext> productionContexts,
+        bool requireProductionContext,
+        CancellationToken cancellationToken);
 }
 
 public interface IOeeRawIntervalRepository
 {
     Task<IReadOnlyList<PlcRawInterval>> InsertMissingAsync(IReadOnlyCollection<PlcRawInterval> rawIntervals, CancellationToken cancellationToken);
-    Task<PlcRawInterval?> GetPreviousAsync(string machineCode, long beforeReadAtUnixTimeSeconds, CancellationToken cancellationToken);
+    Task<PlcRawInterval?> GetPreviousInContextAsync(
+        string machineCode,
+        string productionOrderCode,
+        string sessionId,
+        long contextStartedUnixTimeSeconds,
+        long beforeReadAtUnixTimeSeconds,
+        CancellationToken cancellationToken);
 }
 
 public sealed class OeeRawIntervalService(
@@ -22,12 +33,16 @@ public sealed class OeeRawIntervalService(
     IOeeRawIntervalRepository repository,
     ILogger<OeeRawIntervalService> logger) : IOeeRawIntervalService
 {
-    public async Task<IReadOnlyList<PlcRawInterval>> CaptureAsync(TimeSpan interval, CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<PlcRawInterval>> CaptureAsync(
+        TimeSpan interval,
+        IReadOnlyDictionary<string, ProductionContext> productionContexts,
+        bool requireProductionContext,
+        CancellationToken cancellationToken)
     {
         var intervalSeconds = Math.Max(1, (long)interval.TotalSeconds);
         var nowUnixTimeSeconds = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var rawIntervals = valueReader.GetSnapshots()
-            .Select(snapshot => TryCreateRawInterval(snapshot, intervalSeconds, nowUnixTimeSeconds))
+            .Select(snapshot => TryCreateRawInterval(snapshot, intervalSeconds, nowUnixTimeSeconds, productionContexts, requireProductionContext))
             .OfType<PlcRawInterval>()
             .ToList();
 
@@ -42,9 +57,20 @@ public sealed class OeeRawIntervalService(
         return inserted;
     }
 
-    private static PlcRawInterval? TryCreateRawInterval(MachineValueSnapshotDto snapshot, long intervalSeconds, long nowUnixTimeSeconds)
+    private static PlcRawInterval? TryCreateRawInterval(
+        MachineValueSnapshotDto snapshot,
+        long intervalSeconds,
+        long nowUnixTimeSeconds,
+        IReadOnlyDictionary<string, ProductionContext> productionContexts,
+        bool requireProductionContext)
     {
         if (!snapshot.Online || snapshot.LastReadUtc is null || snapshot.Values.Count == 0)
+        {
+            return null;
+        }
+
+        var context = ResolveContext(snapshot.MachineCode, productionContexts, requireProductionContext);
+        if (context is null)
         {
             return null;
         }
@@ -60,6 +86,8 @@ public sealed class OeeRawIntervalService(
         return new PlcRawInterval
         {
             MachineCode = snapshot.MachineCode,
+            ProductionOrderCode = Normalize(context.ProductionOrderCode),
+            SessionId = Normalize(context.SessionId),
             ReadAtUnixTimeSeconds = readAtUnixTimeSeconds,
             MachineState = ReadInt32(signals, OeeSignalCodes.MachineState),
             ShotOkTotal = ReadInt64(signals, OeeSignalCodes.ShotOkCount),
@@ -71,6 +99,32 @@ public sealed class OeeRawIntervalService(
             CreatedUnixTimeSeconds = nowUnixTimeSeconds
         };
     }
+
+    private static ProductionContext? ResolveContext(
+        string machineCode,
+        IReadOnlyDictionary<string, ProductionContext> productionContexts,
+        bool requireProductionContext)
+    {
+        if (productionContexts.TryGetValue(machineCode, out var context) &&
+            context.Status != ProductionContextStatus.Stopped)
+        {
+            return context;
+        }
+
+        return requireProductionContext
+            ? null
+            : new ProductionContext
+            {
+                MachineCode = machineCode,
+                CommandCode = OeeTestProductionContext.CommandCode,
+                ProductionOrderCode = OeeTestProductionContext.ProductionOrderCode,
+                SessionId = OeeTestProductionContext.SessionId,
+                Status = ProductionContextStatus.Started
+            };
+    }
+
+    private static string Normalize(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim();
 
     private static long AlignToInterval(long unixTimeSeconds, long intervalSeconds) =>
         unixTimeSeconds - unixTimeSeconds % intervalSeconds;

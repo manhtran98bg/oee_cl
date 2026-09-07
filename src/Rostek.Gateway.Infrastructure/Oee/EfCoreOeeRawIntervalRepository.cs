@@ -14,6 +14,8 @@ public sealed class EfCoreOeeRawIntervalRepository(GatewayDbContext dbContext) :
         {
             var exists = await dbContext.PlcRawIntervals.AnyAsync(
                 item => item.MachineCode.ToUpper() == raw.MachineCode.ToUpper() &&
+                        item.ProductionOrderCode.ToUpper() == raw.ProductionOrderCode.ToUpper() &&
+                        item.SessionId.ToUpper() == raw.SessionId.ToUpper() &&
                         item.ReadAtUnixTimeSeconds == raw.ReadAtUnixTimeSeconds,
                 cancellationToken);
             if (exists)
@@ -33,11 +35,20 @@ public sealed class EfCoreOeeRawIntervalRepository(GatewayDbContext dbContext) :
         return inserted;
     }
 
-    public Task<PlcRawInterval?> GetPreviousAsync(string machineCode, long beforeReadAtUnixTimeSeconds, CancellationToken cancellationToken) =>
+    public Task<PlcRawInterval?> GetPreviousInContextAsync(
+        string machineCode,
+        string productionOrderCode,
+        string sessionId,
+        long contextStartedUnixTimeSeconds,
+        long beforeReadAtUnixTimeSeconds,
+        CancellationToken cancellationToken) =>
         dbContext.PlcRawIntervals
             .AsNoTracking()
             .Where(raw =>
                 raw.MachineCode.ToUpper() == machineCode.ToUpper() &&
+                raw.ProductionOrderCode.ToUpper() == productionOrderCode.ToUpper() &&
+                raw.SessionId.ToUpper() == sessionId.ToUpper() &&
+                raw.ReadAtUnixTimeSeconds >= contextStartedUnixTimeSeconds &&
                 raw.ReadAtUnixTimeSeconds < beforeReadAtUnixTimeSeconds)
             .OrderByDescending(raw => raw.ReadAtUnixTimeSeconds)
             .FirstOrDefaultAsync(cancellationToken);

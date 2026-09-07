@@ -20,7 +20,11 @@ public sealed class MesSyncHostedService(
         }
 
         var interval = TimeSpan.FromMilliseconds(Math.Max(1000, current.SyncIntervalMs));
-        logger.LogInformation("MES sync started. SyncIntervalMs={SyncIntervalMs}, BatchSize={BatchSize}", (int)interval.TotalMilliseconds, current.BatchSize);
+        logger.LogInformation(
+            "MES sync started. SyncIntervalMs={SyncIntervalMs}, BatchSize={BatchSize}, RequireProductionContext={RequireProductionContext}",
+            (int)interval.TotalMilliseconds,
+            current.BatchSize,
+            current.RequireProductionContext);
 
         using var timer = new PeriodicTimer(interval);
         while (!stoppingToken.IsCancellationRequested)

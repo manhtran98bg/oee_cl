@@ -37,6 +37,7 @@ public sealed class ProductionCommandService(
         context.CommandCode = request.CommandCode.Trim();
         context.Status = status;
         context.ProductionOrderCode = Normalize(request.ProductionOrderCode);
+        context.SessionId = Normalize(request.SessionId) ?? string.Empty;
         context.OperatorCode = Normalize(request.OperatorCode);
         context.ReasonCode = Normalize(request.ReasonCode);
         context.Note = Normalize(request.Note);
@@ -78,16 +79,32 @@ public sealed class MesSyncOutboxService(
 
     public async Task<int> EnqueueSecondlyMetricsAsync(string gatewayId, CancellationToken cancellationToken)
     {
-        var interval = TimeSpan.FromMilliseconds(Math.Max(1000, options.Value.SyncIntervalMs));
-        var rawIntervals = await rawIntervalService.CaptureAsync(interval, cancellationToken);
+        var current = options.Value;
+        var interval = TimeSpan.FromMilliseconds(Math.Max(1000, current.SyncIntervalMs));
+        var contexts = await repository.ListActiveProductionContextsAsync(cancellationToken);
+        var rawIntervals = await rawIntervalService.CaptureAsync(
+            interval,
+            contexts,
+            current.RequireProductionContext,
+            cancellationToken);
         if (rawIntervals.Count == 0)
         {
             logger.LogDebug("No new OEE raw intervals available to build MES metrics");
             return 0;
         }
 
-        var contexts = await repository.ListActiveProductionContextsAsync(cancellationToken);
-        var metrics = await metricBuilder.BuildMetricsAsync(gatewayId, rawIntervals, contexts, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), cancellationToken);
+        logger.LogDebug(
+            "Building MES metrics. RequireProductionContext={RequireProductionContext}, RawIntervalCount={RawIntervalCount}, ProductionContextCount={ProductionContextCount}",
+            current.RequireProductionContext,
+            rawIntervals.Count,
+            contexts.Count);
+        var metrics = await metricBuilder.BuildMetricsAsync(
+            gatewayId,
+            rawIntervals,
+            contexts,
+            DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            current.RequireProductionContext,
+            cancellationToken);
         if (metrics.Count == 0)
         {
             logger.LogDebug("No OEE secondly metrics available to enqueue");

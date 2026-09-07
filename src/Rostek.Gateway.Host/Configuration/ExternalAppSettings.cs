@@ -78,7 +78,8 @@ public static class ExternalAppSettings
                 TimeoutSeconds = 30,
                 RetryCount = 3,
                 BatchSize = 100,
-                SyncIntervalMs = 5000
+                SyncIntervalMs = 5000,
+                RequireProductionContext = false
             },
             Kestrel = new
             {

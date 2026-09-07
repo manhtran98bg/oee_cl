@@ -24,6 +24,7 @@ public sealed class ExternalAppSettingsTests
         Assert.Contains("\"MesSync\"", content);
         Assert.Contains("\"BaseUrl\": \"\"", content);
         Assert.Contains("\"SyncIntervalMs\": 5000", content);
+        Assert.Contains("\"RequireProductionContext\": false", content);
     }
 
     [Fact]

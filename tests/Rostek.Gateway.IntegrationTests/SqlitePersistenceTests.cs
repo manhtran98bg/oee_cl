@@ -39,7 +39,8 @@ public sealed class SqlitePersistenceTests
             MachineCode = "M16-01",
             CommandCode = "CMD-001",
             Status = ProductionContextStatus.Started,
-            ProductionOrderCode = "MO-001"
+            ProductionOrderCode = "MO-001",
+            SessionId = "SESSION-001"
         });
         db.MesSyncOutboxMessages.Add(new MesSyncOutboxMessage
         {
@@ -66,12 +67,16 @@ public sealed class SqlitePersistenceTests
         db.PlcRawIntervals.Add(new PlcRawInterval
         {
             MachineCode = "M16-01",
+            ProductionOrderCode = "MO-001",
+            SessionId = "SESSION-001",
             ReadAtUnixTimeSeconds = readAt.ToUnixTimeSeconds(),
             ShotOkTotal = 100
         });
         db.PlcRawIntervals.Add(new PlcRawInterval
         {
             MachineCode = "M16-01",
+            ProductionOrderCode = "MO-001",
+            SessionId = "SESSION-001",
             ReadAtUnixTimeSeconds = readAt.ToUnixTimeSeconds(),
             ShotOkTotal = 101
         });
@@ -93,13 +98,38 @@ public sealed class SqlitePersistenceTests
         var insertedFirst = await repository.InsertMissingAsync([Raw("M16-01", first, 100)], CancellationToken.None);
         var duplicate = await repository.InsertMissingAsync([Raw("M16-01", first, 101)], CancellationToken.None);
         var insertedSecond = await repository.InsertMissingAsync([Raw("M16-01", second, 108)], CancellationToken.None);
-        var previous = await repository.GetPreviousAsync("M16-01", second.ToUnixTimeSeconds(), CancellationToken.None);
+        var previous = await repository.GetPreviousInContextAsync("M16-01", "MO-001", "SESSION-001", 0, second.ToUnixTimeSeconds(), CancellationToken.None);
 
         Assert.Single(insertedFirst);
         Assert.Empty(duplicate);
         Assert.Single(insertedSecond);
         Assert.NotNull(previous);
         Assert.Equal(100, previous.ShotOkTotal);
+    }
+
+    [Fact]
+    public async Task Oee_raw_interval_repository_reads_previous_only_in_same_production_session()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        await using var db = CreateContext(connection);
+        await db.Database.EnsureCreatedAsync();
+        var repository = new EfCoreOeeRawIntervalRepository(db);
+        var first = DateTimeOffset.FromUnixTimeSeconds(10);
+        var second = DateTimeOffset.FromUnixTimeSeconds(15);
+
+        await repository.InsertMissingAsync(
+            [
+                Raw("M16-01", first, 100, sessionId: "OLD-SESSION"),
+                Raw("M16-01", first, 200, sessionId: "SESSION-001")
+            ],
+            CancellationToken.None);
+
+        var previous = await repository.GetPreviousInContextAsync("M16-01", "MO-001", "SESSION-001", 0, second.ToUnixTimeSeconds(), CancellationToken.None);
+
+        Assert.NotNull(previous);
+        Assert.Equal("SESSION-001", previous.SessionId);
+        Assert.Equal(200, previous.ShotOkTotal);
     }
 
     [Fact]
@@ -145,10 +175,12 @@ public sealed class SqlitePersistenceTests
         return new GatewayDbContext(options);
     }
 
-    private static PlcRawInterval Raw(string machineCode, DateTimeOffset readAtUtc, long shotOkTotal) =>
+    private static PlcRawInterval Raw(string machineCode, DateTimeOffset readAtUtc, long shotOkTotal, string sessionId = "SESSION-001") =>
         new()
         {
             MachineCode = machineCode,
+            ProductionOrderCode = "MO-001",
+            SessionId = sessionId,
             ReadAtUnixTimeSeconds = readAtUtc.ToUnixTimeSeconds(),
             ShotOkTotal = shotOkTotal,
             CreatedUnixTimeSeconds = readAtUtc.ToUnixTimeSeconds()

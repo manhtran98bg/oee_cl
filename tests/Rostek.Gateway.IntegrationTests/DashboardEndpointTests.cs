@@ -45,7 +45,7 @@ public sealed class DashboardEndpointTests
 
             var commandResponse = await client.PostAsJsonAsync(
                 "/api/v1/mes/production-commands",
-                new ProductionCommandRequest("M16-01", "CMD-001", "start", DateTimeOffset.UtcNow.ToUnixTimeSeconds(), "MO-001", "OP-01", null, null));
+                new ProductionCommandRequest("M16-01", "CMD-001", "start", DateTimeOffset.UtcNow.ToUnixTimeSeconds(), "MO-001", "SESSION-001", "OP-01", null, null));
             var statusResponse = await client.GetAsync("/api/v1/mes-sync/status");
 
             Assert.Equal(HttpStatusCode.OK, commandResponse.StatusCode);

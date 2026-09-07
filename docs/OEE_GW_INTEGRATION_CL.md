@@ -30,6 +30,8 @@ Modbus/OPC UA device
 
 Runtime chỉ đọc device và cập nhật RAM. Runtime không gọi HTTP và không biết MES server.
 
+`RequireProductionContext=false` là chế độ test: Gateway vẫn build/enqueue metric bằng context tạm `order_id = TEST_ORDER`, `session_id = TEST_SESSION`, `tag = TEST` khi chưa nhận production command từ MES. Khi MES command đã tích hợp thật, đổi thành `true` để chỉ sync metric cho máy có production context.
+
 ## 3. Cấu Hình MES Sync
 
 File cấu hình ngoài:
@@ -49,7 +51,8 @@ Section:
     "TimeoutSeconds": 30,
     "RetryCount": 3,
     "BatchSize": 100,
-    "SyncIntervalMs": 5000
+    "SyncIntervalMs": 5000,
+    "RequireProductionContext": false
   }
 }
 ```
@@ -79,6 +82,7 @@ Payload dùng snake_case:
   "action": "start",
   "occurred_at_unix_seconds": 1788746400,
   "production_order_code": "MO-001",
+  "session_id": "MO-001-SESSION-001",
   "operator_code": "OP-01",
   "reason_code": null,
   "note": null
@@ -93,7 +97,9 @@ pause
 stop
 ```
 
-Gateway lưu trạng thái này vào SQLite `ProductionContexts`. Dữ liệu này dùng để đóng gói metric theo máy/lệnh sản xuất.
+Gateway lưu trạng thái này vào SQLite `ProductionContexts`. Dữ liệu này dùng để đóng gói metric theo máy/lệnh sản xuất/lượt sản xuất.
+
+`session_id` là mã của một lượt sản xuất. Một `production_order_code` có thể có nhiều `session_id` khác nhau nếu cùng lệnh sản xuất được chạy nhiều lượt.
 
 Nếu không gửi `occurred_at_unix_seconds`, Gateway tự dùng thời điểm hiện tại theo Unix seconds.
 
@@ -107,11 +113,19 @@ Gateway map signal theo `SignalCode`, không phân biệt hoa thường:
 | `SHOT_OK_COUNT` | Counter OK tích lũy từ PLC |
 | `SHOT_NG_COUNT` | Counter NG tích lũy từ PLC |
 | `CYCLE_TIME_MS` | Cycle time hiện tại, millisecond |
-| `RUN_TIME_TOTAL` | Runtime tích lũy |
-| `STOP_TIME_TOTAL` | Stop time tích lũy |
-| `ERROR_TIME_TOTAL` | Error time tích lũy |
+| `RUN_TIME_TOTAL` | Runtime tích lũy, đơn vị giây |
+| `STOP_TIME_TOTAL` | Stop time tích lũy, đơn vị giây |
+| `ERROR_TIME_TOTAL` | Error time tích lũy, đơn vị giây |
 
-Gateway lưu raw interval vào SQLite rồi tính delta từ raw trước đó. Sau khi app restart, nếu còn raw interval trước đó trong SQLite thì gateway vẫn có thể tính tiếp metric.
+Gateway lưu raw interval vào SQLite rồi tính delta từ raw trước đó trong cùng production context:
+
+```text
+same machine_code
+same production_order_code
+same session_id
+```
+
+Sau khi app restart, nếu còn raw interval trước đó trong SQLite cùng `machine_code/order_id/session_id`, gateway vẫn có thể tính tiếp metric.
 
 ## 6. HTTP Sync Lên MES
 
@@ -139,6 +153,7 @@ Body:
       "machine": "M16-01",
       "version": "1",
       "order_id": "MO-001",
+      "session_id": "MO-001-SESSION-001",
       "tag": "CMD-20260907-001",
       "total": 10,
       "ng_qty": 1,

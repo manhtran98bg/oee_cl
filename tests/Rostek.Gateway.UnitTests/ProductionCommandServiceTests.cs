@@ -15,7 +15,7 @@ public sealed class ProductionCommandServiceTests
         var service = new ProductionCommandService(repository, NullLogger<ProductionCommandService>.Instance);
         var occurredAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
-        var response = await service.HandleAsync(new ProductionCommandRequest("M16-01", "CMD-001", "start", occurredAt, "MO-001", "OP-01", null, "start run"), CancellationToken.None);
+        var response = await service.HandleAsync(new ProductionCommandRequest("M16-01", "CMD-001", "start", occurredAt, "MO-001", "SESSION-001", "OP-01", null, "start run"), CancellationToken.None);
 
         Assert.True(response.Accepted);
         var context = Assert.Single(repository.Contexts.Values);
@@ -23,6 +23,7 @@ public sealed class ProductionCommandServiceTests
         Assert.Equal("CMD-001", context.CommandCode);
         Assert.Equal(ProductionContextStatus.Started, context.Status);
         Assert.Equal("MO-001", context.ProductionOrderCode);
+        Assert.Equal("SESSION-001", context.SessionId);
         Assert.Equal(occurredAt, context.StartedUnixTimeSeconds);
     }
 
@@ -31,7 +32,7 @@ public sealed class ProductionCommandServiceTests
     {
         var service = new ProductionCommandService(new FakeMesSyncOutboxRepository(), NullLogger<ProductionCommandService>.Instance);
 
-        var response = await service.HandleAsync(new ProductionCommandRequest("M16-01", "CMD-001", "bad", null, null, null, null, null), CancellationToken.None);
+        var response = await service.HandleAsync(new ProductionCommandRequest("M16-01", "CMD-001", "bad", null, null, null, null, null, null), CancellationToken.None);
 
         Assert.False(response.Accepted);
         Assert.Contains("action", response.Message, StringComparison.OrdinalIgnoreCase);

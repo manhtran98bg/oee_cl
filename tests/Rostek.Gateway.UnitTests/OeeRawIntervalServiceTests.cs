@@ -18,10 +18,12 @@ public sealed class OeeRawIntervalServiceTests
         var service = CreateService(reader, repository);
         reader.SetSnapshots([CreateSnapshot("M16-01", timestamp, machineState: 1, shotOkCount: 100, shotNgCount: 2, cycleTimeMs: 1500, runTimeTotal: 10000, stopTimeTotal: 2000, errorTimeTotal: 500)]);
 
-        var inserted = await service.CaptureAsync(TimeSpan.FromSeconds(5), CancellationToken.None);
+        var inserted = await service.CaptureAsync(TimeSpan.FromSeconds(5), TestContexts("M16-01"), true, CancellationToken.None);
 
         var raw = Assert.Single(inserted);
         Assert.Equal("M16-01", raw.MachineCode);
+        Assert.Equal("MO-001", raw.ProductionOrderCode);
+        Assert.Equal("SESSION-001", raw.SessionId);
         Assert.Equal(10, raw.ReadAtUnixTimeSeconds);
         Assert.Equal(1, raw.MachineState);
         Assert.Equal(100, raw.ShotOkTotal);
@@ -40,7 +42,7 @@ public sealed class OeeRawIntervalServiceTests
         var service = CreateService(reader, repository);
         reader.SetSnapshots([CreateSnapshot("M16-01", DateTimeOffset.UtcNow, online: false, shotOkCount: 100)]);
 
-        var inserted = await service.CaptureAsync(TimeSpan.FromSeconds(5), CancellationToken.None);
+        var inserted = await service.CaptureAsync(TimeSpan.FromSeconds(5), TestContexts("M16-01"), true, CancellationToken.None);
 
         Assert.Empty(inserted);
     }
@@ -53,9 +55,9 @@ public sealed class OeeRawIntervalServiceTests
         var repository = new FakeOeeRawIntervalRepository();
         var service = CreateService(reader, repository);
         reader.SetSnapshots([CreateSnapshot("M16-01", timestamp, shotOkCount: 100)]);
-        await service.CaptureAsync(TimeSpan.FromSeconds(5), CancellationToken.None);
+        await service.CaptureAsync(TimeSpan.FromSeconds(5), TestContexts("M16-01"), true, CancellationToken.None);
 
-        var second = await service.CaptureAsync(TimeSpan.FromSeconds(5), CancellationToken.None);
+        var second = await service.CaptureAsync(TimeSpan.FromSeconds(5), TestContexts("M16-01"), true, CancellationToken.None);
 
         Assert.Empty(second);
         Assert.Single(repository.RawIntervals);
@@ -63,6 +65,19 @@ public sealed class OeeRawIntervalServiceTests
 
     private static OeeRawIntervalService CreateService(MutableMachineValueReader reader, FakeOeeRawIntervalRepository repository) =>
         new(reader, repository, NullLogger<OeeRawIntervalService>.Instance);
+
+    private static IReadOnlyDictionary<string, ProductionContext> TestContexts(string machineCode) =>
+        new Dictionary<string, ProductionContext>(StringComparer.OrdinalIgnoreCase)
+        {
+            [machineCode] = new()
+            {
+                MachineCode = machineCode,
+                CommandCode = "CMD-001",
+                ProductionOrderCode = "MO-001",
+                SessionId = "SESSION-001",
+                Status = Domain.Enums.ProductionContextStatus.Started
+            }
+        };
 
     private static MachineValueSnapshotDto CreateSnapshot(
         string machineCode,
@@ -119,13 +134,21 @@ public sealed class OeeRawIntervalServiceTests
             var inserted = rawIntervals
                 .Where(raw => !RawIntervals.Any(existing =>
                     existing.MachineCode.Equals(raw.MachineCode, StringComparison.OrdinalIgnoreCase) &&
+                    existing.ProductionOrderCode.Equals(raw.ProductionOrderCode, StringComparison.OrdinalIgnoreCase) &&
+                    existing.SessionId.Equals(raw.SessionId, StringComparison.OrdinalIgnoreCase) &&
                     existing.ReadAtUnixTimeSeconds == raw.ReadAtUnixTimeSeconds))
                 .ToList();
             RawIntervals.AddRange(inserted);
             return Task.FromResult<IReadOnlyList<PlcRawInterval>>(inserted);
         }
 
-        public Task<PlcRawInterval?> GetPreviousAsync(string machineCode, long beforeReadAtUnixTimeSeconds, CancellationToken cancellationToken) =>
+        public Task<PlcRawInterval?> GetPreviousInContextAsync(
+            string machineCode,
+            string productionOrderCode,
+            string sessionId,
+            long contextStartedUnixTimeSeconds,
+            long beforeReadAtUnixTimeSeconds,
+            CancellationToken cancellationToken) =>
             Task.FromResult<PlcRawInterval?>(null);
     }
 }
