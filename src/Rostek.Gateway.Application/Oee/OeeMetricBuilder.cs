@@ -4,14 +4,9 @@ using Rostek.Gateway.Domain.Entities;
 
 namespace Rostek.Gateway.Application.Oee;
 
-public interface IOeeMetricBuilder
-{
-    Task<OeeBuildResult> BuildMetricsAsync(IReadOnlyCollection<PlcRawInterval> currentRawIntervals, CancellationToken cancellationToken);
-}
-
 public sealed class OeeMetricBuilder(
     IOeeLocalRepository repository,
-    IProductionContextStore productionContextStore,
+    IProductionContextCache productionContextCache,
     ILogger<OeeMetricBuilder> logger) : IOeeMetricBuilder
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -24,7 +19,7 @@ public sealed class OeeMetricBuilder(
 
         foreach (var current in currentRawIntervals.OrderBy(raw => raw.Machine, StringComparer.OrdinalIgnoreCase).ThenBy(raw => raw.ReadAt))
         {
-            var context = productionContextStore.Get(current.Machine);
+            var context = productionContextCache.Get(current.Machine);
             if (context is null || !context.Status.Equals("active", StringComparison.OrdinalIgnoreCase))
             {
                 continue;

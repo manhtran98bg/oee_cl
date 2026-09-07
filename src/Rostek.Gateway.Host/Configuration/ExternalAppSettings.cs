@@ -59,6 +59,8 @@ public static class ExternalAppSettings
             {
                 GatewayId = "GW-M16-01",
                 DataDirectory = "data",
+                ConfigDatabaseFileName = "config.db",
+                OeeDatabaseFileName = "oee.db",
                 BackupDirectory = "backups",
                 ExportDirectory = "exports"
             },

@@ -7,24 +7,13 @@ using Rostek.Gateway.Infrastructure.Persistence;
 
 namespace Rostek.Gateway.Infrastructure.Migrations;
 
-[DbContextAttribute(typeof(GatewayDbContext))]
-[Migration("202609070005_ReplaceMesOeeWithPythonLocalRuntimeSchema")]
-public partial class ReplaceMesOeeWithPythonLocalRuntimeSchema : Migration
+[DbContextAttribute(typeof(OeeDbContext))]
+[Migration("202609070001_InitialOeeSchema")]
+public partial class InitialOeeSchema : Migration
 {
     protected override void Up(MigrationBuilder migrationBuilder)
     {
         migrationBuilder.Sql("""
-            drop table if exists ProductionContexts;
-            drop table if exists PlcRawIntervals;
-            drop table if exists MesSyncOutboxMessages;
-            drop table if exists production_context;
-            drop table if exists production_period;
-            drop table if exists plc_raw_interval;
-            drop table if exists production_metric;
-            drop table if exists product_metric;
-            drop table if exists downtime_event;
-            drop table if exists sync_outbox;
-
             create table production_context (
                 machine TEXT not null primary key,
                 mode TEXT not null,

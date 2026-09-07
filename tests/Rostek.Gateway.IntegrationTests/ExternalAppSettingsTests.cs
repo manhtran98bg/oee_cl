@@ -19,6 +19,8 @@ public sealed class ExternalAppSettingsTests
 
         var content = File.ReadAllText(status.ConfigPath);
         Assert.Contains("\"Gateway\"", content);
+        Assert.Contains("\"ConfigDatabaseFileName\": \"config.db\"", content);
+        Assert.Contains("\"OeeDatabaseFileName\": \"oee.db\"", content);
         Assert.Contains("\"Runtime\"", content);
         Assert.Contains("\"Kestrel\"", content);
         Assert.Contains("\"MesSync\"", content);

@@ -4,7 +4,7 @@ using Rostek.Gateway.Contracts.Runtime;
 
 namespace Rostek.Gateway.Runtime.Machines;
 
-public sealed class FakeMachineRuntime(EffectiveMachineConfiguration configuration) : IMachineRuntime
+public sealed class UnsupportedProtocolMachineRuntime(EffectiveMachineConfiguration configuration) : IMachineRuntime
 {
     private EffectiveMachineConfiguration _configuration = configuration;
     private MachineRuntimeStatusDto _status = new(configuration.MachineCode, MachineRuntimeState.Stopped, "Created", DateTimeOffset.UtcNow, 0, 0);
@@ -24,7 +24,7 @@ public sealed class FakeMachineRuntime(EffectiveMachineConfiguration configurati
         _status = _status with
         {
             State = MachineRuntimeState.Connected,
-            Message = "Fake runtime connected",
+            Message = "Unsupported protocol runtime connected",
             UpdatedAtUtc = DateTimeOffset.UtcNow,
             StartCount = _status.StartCount + 1
         };
@@ -37,7 +37,7 @@ public sealed class FakeMachineRuntime(EffectiveMachineConfiguration configurati
         _status = _status with
         {
             State = MachineRuntimeState.Stopped,
-            Message = "Fake runtime stopped",
+            Message = "Unsupported protocol runtime stopped",
             UpdatedAtUtc = DateTimeOffset.UtcNow,
             StopCount = _status.StopCount + 1
         };
@@ -48,7 +48,7 @@ public sealed class FakeMachineRuntime(EffectiveMachineConfiguration configurati
     {
         cancellationToken.ThrowIfCancellationRequested();
         _configuration = configuration;
-        _status = _status with { Message = "Fake configuration applied", UpdatedAtUtc = DateTimeOffset.UtcNow };
+        _status = _status with { Message = "Unsupported protocol configuration applied", UpdatedAtUtc = DateTimeOffset.UtcNow };
         return Task.CompletedTask;
     }
 
@@ -58,7 +58,7 @@ public sealed class FakeMachineRuntime(EffectiveMachineConfiguration configurati
     }
 }
 
-public sealed class FakeMachineRuntimeFactory : IMachineRuntimeFactory
+public sealed class UnsupportedProtocolMachineRuntimeFactory : IMachineRuntimeFactory
 {
-    public IMachineRuntime Create(EffectiveMachineConfiguration configuration) => new FakeMachineRuntime(configuration);
+    public IMachineRuntime Create(EffectiveMachineConfiguration configuration) => new UnsupportedProtocolMachineRuntime(configuration);
 }

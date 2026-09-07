@@ -8,7 +8,7 @@ namespace Rostek.Gateway.Application.MesSync;
 
 public sealed class ProductionCommandService(
     IOeeLocalRepository repository,
-    IProductionContextStore productionContextStore,
+    IProductionContextCache productionContextCache,
     ILogger<ProductionCommandService> logger) : IProductionCommandService
 {
     public async Task<ProductionCommandResponse> HandleAsync(ProductionCommandRequest request, CancellationToken cancellationToken)
@@ -47,7 +47,7 @@ public sealed class ProductionCommandService(
         context.UpdatedAt = now;
 
         await repository.SaveProductionContextAsync(context, cancellationToken);
-        productionContextStore.Upsert(context);
+        productionContextCache.Upsert(context);
         if (status == "active")
         {
             await repository.EnsureTestProductionPeriodAsync(context, now, cancellationToken);
@@ -63,7 +63,7 @@ public sealed class ProductionCommandService(
 
 public sealed class MesSyncOutboxService(
     IOptions<MesSyncOptions> options,
-    IOeeRawIntervalService rawIntervalService,
+    IRawDataCaptureService rawDataCaptureService,
     IOeeMetricBuilder metricBuilder,
     IOeeLocalRepository repository,
     ILogger<MesSyncOutboxService> logger) : IMesSyncOutboxService
@@ -75,7 +75,7 @@ public sealed class MesSyncOutboxService(
     {
         var current = options.Value;
         var interval = TimeSpan.FromMilliseconds(Math.Max(1000, current.SyncIntervalMs));
-        var rawIntervals = await rawIntervalService.CaptureAsync(interval, current.RequireProductionContext, cancellationToken);
+        var rawIntervals = await rawDataCaptureService.CaptureAsync(interval, current.RequireProductionContext, cancellationToken);
         if (rawIntervals.Count == 0)
         {
             logger.LogDebug("No new PLC raw intervals available for local OEE pipeline");
@@ -225,14 +225,4 @@ public sealed class MesSyncOutboxService(
         description = downtime.Description,
         extra = downtime.OrderExtraJson
     };
-}
-
-public sealed class MesSyncDispatcher(
-    ILogger<MesSyncDispatcher> logger) : IMesSyncDispatcher
-{
-    public Task<int> DispatchPendingAsync(CancellationToken cancellationToken)
-    {
-        logger.LogDebug("MES HTTP dispatch is disabled in local Python OEE schema test phase");
-        return Task.FromResult(0);
-    }
 }

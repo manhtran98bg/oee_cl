@@ -5,7 +5,7 @@ using Rostek.Gateway.Infrastructure.Persistence;
 
 namespace Rostek.Gateway.Infrastructure.Oee;
 
-public sealed class EfCoreOeeRawIntervalRepository(GatewayDbContext dbContext) : IOeeLocalRepository
+public sealed class EfCoreOeeLocalRepository(OeeDbContext dbContext) : IOeeLocalRepository
 {
     public Task<ProductionContext?> GetProductionContextAsync(string machine, CancellationToken cancellationToken) =>
         dbContext.ProductionContexts.FirstOrDefaultAsync(
@@ -15,12 +15,6 @@ public sealed class EfCoreOeeRawIntervalRepository(GatewayDbContext dbContext) :
     public async Task<IReadOnlyDictionary<string, ProductionContext>> ListProductionContextsAsync(CancellationToken cancellationToken) =>
         await dbContext.ProductionContexts
             .AsNoTracking()
-            .ToDictionaryAsync(context => context.Machine, StringComparer.OrdinalIgnoreCase, cancellationToken);
-
-    public async Task<IReadOnlyDictionary<string, ProductionContext>> ListActiveProductionContextsAsync(CancellationToken cancellationToken) =>
-        await dbContext.ProductionContexts
-            .AsNoTracking()
-            .Where(context => context.Status == "active" || context.Status == "pause")
             .ToDictionaryAsync(context => context.Machine, StringComparer.OrdinalIgnoreCase, cancellationToken);
 
     public async Task<ProductionContext> EnsureTestProductionContextAsync(string machine, long startAt, CancellationToken cancellationToken)
@@ -314,54 +308,6 @@ public sealed class EfCoreOeeRawIntervalRepository(GatewayDbContext dbContext) :
         await dbContext.SaveChangesAsync(cancellationToken);
     }
 
-    public async Task<IReadOnlyList<MesSyncOutboxMessage>> TakePendingOutboxAsync(int batchSize, CancellationToken cancellationToken)
-    {
-        var messages = await dbContext.MesSyncOutboxMessages
-            .Where(message => message.Status == "pending" || message.Status == "failed")
-            .OrderBy(message => message.UpdatedAt)
-            .Take(batchSize)
-            .ToListAsync(cancellationToken);
-
-        foreach (var message in messages)
-        {
-            message.Status = "sending";
-            message.UpdatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        }
-
-        await dbContext.SaveChangesAsync(cancellationToken);
-        return messages;
-    }
-
-    public async Task MarkOutboxSyncedAsync(string id, long now, CancellationToken cancellationToken)
-    {
-        var message = await dbContext.MesSyncOutboxMessages.FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
-        if (message is null)
-        {
-            return;
-        }
-
-        message.Status = "synced";
-        message.LastError = string.Empty;
-        message.SyncedAt = now;
-        message.UpdatedAt = now;
-        await dbContext.SaveChangesAsync(cancellationToken);
-    }
-
-    public async Task MarkOutboxFailedAsync(string id, string error, long now, CancellationToken cancellationToken)
-    {
-        var message = await dbContext.MesSyncOutboxMessages.FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
-        if (message is null)
-        {
-            return;
-        }
-
-        message.Status = "failed";
-        message.RetryCount++;
-        message.LastError = Truncate(error, 2000);
-        message.UpdatedAt = now;
-        await dbContext.SaveChangesAsync(cancellationToken);
-    }
-
     public async Task<(int PendingCount, int FailedCount, long? LastSuccess, string? LastError)> GetOutboxStatusAsync(CancellationToken cancellationToken)
     {
         var pendingCount = await dbContext.MesSyncOutboxMessages
@@ -381,7 +327,4 @@ public sealed class EfCoreOeeRawIntervalRepository(GatewayDbContext dbContext) :
 
         return (pendingCount, failedCount, lastSuccess, lastError);
     }
-
-    private static string Truncate(string value, int maxLength) =>
-        value.Length <= maxLength ? value : value[..maxLength];
 }

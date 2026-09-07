@@ -1,9 +1,9 @@
 using Rostek.Gateway.Application.Oee;
 using Rostek.Gateway.Domain.Entities;
 
-namespace Rostek.Gateway.UnitTests.Fakes;
+namespace Rostek.Gateway.UnitTests.Support;
 
-public sealed class FakeOeeLocalRepository : IOeeLocalRepository
+public sealed class InMemoryOeeLocalRepository : IOeeLocalRepository
 {
     public List<ProductionContext> Contexts { get; } = [];
     public List<ProductionPeriod> Periods { get; } = [];
@@ -18,11 +18,6 @@ public sealed class FakeOeeLocalRepository : IOeeLocalRepository
 
     public Task<IReadOnlyDictionary<string, ProductionContext>> ListProductionContextsAsync(CancellationToken cancellationToken) =>
         Task.FromResult<IReadOnlyDictionary<string, ProductionContext>>(Contexts
-            .ToDictionary(context => context.Machine, StringComparer.OrdinalIgnoreCase));
-
-    public Task<IReadOnlyDictionary<string, ProductionContext>> ListActiveProductionContextsAsync(CancellationToken cancellationToken) =>
-        Task.FromResult<IReadOnlyDictionary<string, ProductionContext>>(Contexts
-            .Where(context => context.Status is "active" or "pause")
             .ToDictionary(context => context.Machine, StringComparer.OrdinalIgnoreCase));
 
     public Task<ProductionContext> EnsureTestProductionContextAsync(string machine, long startAt, CancellationToken cancellationToken)
@@ -179,13 +174,10 @@ public sealed class FakeOeeLocalRepository : IOeeLocalRepository
         return Task.CompletedTask;
     }
 
-    public Task<IReadOnlyList<MesSyncOutboxMessage>> TakePendingOutboxAsync(int batchSize, CancellationToken cancellationToken) =>
-        Task.FromResult<IReadOnlyList<MesSyncOutboxMessage>>(OutboxMessages.Where(item => item.Status is "pending" or "failed").Take(batchSize).ToList());
-
-    public Task MarkOutboxSyncedAsync(string id, long now, CancellationToken cancellationToken) => Task.CompletedTask;
-
-    public Task MarkOutboxFailedAsync(string id, string error, long now, CancellationToken cancellationToken) => Task.CompletedTask;
-
     public Task<(int PendingCount, int FailedCount, long? LastSuccess, string? LastError)> GetOutboxStatusAsync(CancellationToken cancellationToken) =>
-        Task.FromResult((0, 0, (long?)null, (string?)null));
+        Task.FromResult((
+            OutboxMessages.Count(item => item.Status is "pending" or "sending"),
+            OutboxMessages.Count(item => item.Status == "failed"),
+            OutboxMessages.Where(item => item.Status == "synced").OrderByDescending(item => item.SyncedAt).Select(item => (long?)item.SyncedAt).FirstOrDefault(),
+            OutboxMessages.Where(item => item.Status == "failed" && item.LastError.Length > 0).OrderByDescending(item => item.UpdatedAt).Select(item => item.LastError).FirstOrDefault()));
 }

@@ -2,7 +2,7 @@ using Rostek.Gateway.Domain.Entities;
 
 namespace Rostek.Gateway.Application.Oee;
 
-public interface IProductionContextStore
+public interface IProductionContextCache
 {
     IReadOnlyDictionary<string, ProductionContext> Current { get; }
     ProductionContext? Get(string machine);
@@ -10,7 +10,7 @@ public interface IProductionContextStore
     void Upsert(ProductionContext context);
 }
 
-public sealed class ProductionContextStore : IProductionContextStore
+public sealed class ProductionContextCache : IProductionContextCache
 {
     private readonly object _lock = new();
     private Dictionary<string, ProductionContext> _contexts = new(StringComparer.OrdinalIgnoreCase);

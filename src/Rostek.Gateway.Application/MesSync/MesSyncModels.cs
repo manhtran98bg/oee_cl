@@ -62,24 +62,6 @@ public interface IMesSyncOutboxService
     Task<MesOutboxBuildResult> EnqueueLocalOeeAsync(string gatewayId, CancellationToken cancellationToken);
 }
 
-public interface IMesSyncDispatcher
-{
-    Task<int> DispatchPendingAsync(CancellationToken cancellationToken);
-}
-
-public interface IMesServerClient
-{
-    Task SendAsync(string endpoint, string payloadJson, CancellationToken cancellationToken);
-}
-
-public interface IMesSyncOutboxRepository
-{
-    Task<IReadOnlyList<MesSyncOutboxMessage>> TakePendingAsync(int batchSize, CancellationToken cancellationToken);
-    Task MarkSyncedAsync(string id, long nowUnixTimeSeconds, CancellationToken cancellationToken);
-    Task MarkFailedAsync(string id, string error, long nowUnixTimeSeconds, CancellationToken cancellationToken);
-    Task<MesSyncStatusDto> GetStatusAsync(bool enabled, CancellationToken cancellationToken);
-}
-
 public static class ProductionCommandActions
 {
     public const string Start = "start";

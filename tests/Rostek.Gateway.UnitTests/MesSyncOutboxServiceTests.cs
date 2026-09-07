@@ -3,7 +3,7 @@ using Microsoft.Extensions.Options;
 using Rostek.Gateway.Application.MesSync;
 using Rostek.Gateway.Application.Oee;
 using Rostek.Gateway.Domain.Entities;
-using Rostek.Gateway.UnitTests.Fakes;
+using Rostek.Gateway.UnitTests.Support;
 using Xunit;
 
 namespace Rostek.Gateway.UnitTests;
@@ -13,7 +13,7 @@ public sealed class MesSyncOutboxServiceTests
     [Fact]
     public async Task Enqueue_creates_python_schema_outbox_without_production_context_when_not_required()
     {
-        var repository = new FakeOeeLocalRepository();
+        var repository = new InMemoryOeeLocalRepository();
         repository.RawIntervals.Add(Raw("M16-01", 10, shotOkTotal: 100, runTimeTotalSec: 10));
         repository.Contexts.Add(TestContext("M16-01", 10));
         repository.Periods.Add(TestPeriod("M16-01", 10));
@@ -32,7 +32,7 @@ public sealed class MesSyncOutboxServiceTests
     [Fact]
     public async Task Enqueue_skips_without_production_context_when_required()
     {
-        var repository = new FakeOeeLocalRepository();
+        var repository = new InMemoryOeeLocalRepository();
         var service = CreateService([Raw("M16-01", 15, shotOkTotal: 108)], repository, requireProductionContext: true);
 
         var result = await service.EnqueueLocalOeeAsync("GW-M16-01", CancellationToken.None);
@@ -43,7 +43,7 @@ public sealed class MesSyncOutboxServiceTests
 
     private static MesSyncOutboxService CreateService(
         IReadOnlyList<PlcRawInterval> rawIntervals,
-        FakeOeeLocalRepository repository,
+        InMemoryOeeLocalRepository repository,
         bool requireProductionContext)
     {
         var options = Options.Create(new MesSyncOptions
@@ -51,13 +51,13 @@ public sealed class MesSyncOutboxServiceTests
             SyncIntervalMs = 5000,
             RequireProductionContext = requireProductionContext
         });
-        var rawIntervalService = new FakeOeeRawIntervalService(rawIntervals);
-        var store = new ProductionContextStore();
-        store.Replace(repository.Contexts.ToDictionary(context => context.Machine, StringComparer.OrdinalIgnoreCase));
-        var metricBuilder = new OeeMetricBuilder(repository, store, NullLogger<OeeMetricBuilder>.Instance);
+        var rawDataCaptureService = new FakeRawDataCaptureService(rawIntervals);
+        var cache = new ProductionContextCache();
+        cache.Replace(repository.Contexts.ToDictionary(context => context.Machine, StringComparer.OrdinalIgnoreCase));
+        var metricBuilder = new OeeMetricBuilder(repository, cache, NullLogger<OeeMetricBuilder>.Instance);
         return new MesSyncOutboxService(
             options,
-            rawIntervalService,
+            rawDataCaptureService,
             metricBuilder,
             repository,
             NullLogger<MesSyncOutboxService>.Instance);
@@ -110,7 +110,7 @@ public sealed class MesSyncOutboxServiceTests
             PeriodActive = 1
         };
 
-    private sealed class FakeOeeRawIntervalService(IReadOnlyList<PlcRawInterval> rawIntervals) : IOeeRawIntervalService
+    private sealed class FakeRawDataCaptureService(IReadOnlyList<PlcRawInterval> rawIntervals) : IRawDataCaptureService
     {
         public Task<IReadOnlyList<PlcRawInterval>> CaptureAsync(TimeSpan interval, bool requireProductionContext, CancellationToken cancellationToken) =>
             Task.FromResult(requireProductionContext ? [] : rawIntervals);

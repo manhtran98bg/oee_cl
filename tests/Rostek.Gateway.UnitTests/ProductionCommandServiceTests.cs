@@ -1,7 +1,7 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using Rostek.Gateway.Application.MesSync;
 using Rostek.Gateway.Application.Oee;
-using Rostek.Gateway.UnitTests.Fakes;
+using Rostek.Gateway.UnitTests.Support;
 using Xunit;
 
 namespace Rostek.Gateway.UnitTests;
@@ -11,9 +11,9 @@ public sealed class ProductionCommandServiceTests
     [Fact]
     public async Task Start_command_creates_active_python_context()
     {
-        var repository = new FakeOeeLocalRepository();
-        var store = new ProductionContextStore();
-        var service = new ProductionCommandService(repository, store, NullLogger<ProductionCommandService>.Instance);
+        var repository = new InMemoryOeeLocalRepository();
+        var cache = new ProductionContextCache();
+        var service = new ProductionCommandService(repository, cache, NullLogger<ProductionCommandService>.Instance);
         var occurredAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
         var response = await service.HandleAsync(new ProductionCommandRequest("M16-01", "CMD-001", "start", occurredAt, "MO-001", "SESSION-001", "OP-01", null, "start run"), CancellationToken.None);
@@ -25,13 +25,13 @@ public sealed class ProductionCommandServiceTests
         Assert.Equal("MO-001", context.OrderId);
         Assert.Equal("SESSION-001", context.ActivePeriodId);
         Assert.Equal(occurredAt, context.UpdatedAt);
-        Assert.NotNull(store.Get("M16-01"));
+        Assert.NotNull(cache.Get("M16-01"));
     }
 
     [Fact]
     public async Task Invalid_action_is_rejected()
     {
-        var service = new ProductionCommandService(new FakeOeeLocalRepository(), new ProductionContextStore(), NullLogger<ProductionCommandService>.Instance);
+        var service = new ProductionCommandService(new InMemoryOeeLocalRepository(), new ProductionContextCache(), NullLogger<ProductionCommandService>.Instance);
 
         var response = await service.HandleAsync(new ProductionCommandRequest("M16-01", "CMD-001", "bad", null, null, null, null, null, null), CancellationToken.None);
 

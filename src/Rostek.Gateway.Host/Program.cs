@@ -47,12 +47,11 @@ builder.Services.AddScoped<IConfigurationApplyService, ConfigurationApplyService
 builder.Services.AddScoped<IConfigurationVersionService, ConfigurationVersionService>();
 builder.Services.AddScoped<IConfigurationImportExportService, ConfigurationImportExportService>();
 builder.Services.AddScoped<IDashboardService, DashboardService>();
-builder.Services.AddScoped<IOeeRawIntervalService, OeeRawIntervalService>();
+builder.Services.AddScoped<IRawDataCaptureService, RawDataCaptureService>();
 builder.Services.AddScoped<IOeeMetricBuilder, OeeMetricBuilder>();
-builder.Services.AddSingleton<IProductionContextStore, ProductionContextStore>();
+builder.Services.AddSingleton<IProductionContextCache, ProductionContextCache>();
 builder.Services.AddScoped<IProductionCommandService, ProductionCommandService>();
 builder.Services.AddScoped<IMesSyncOutboxService, MesSyncOutboxService>();
-builder.Services.AddScoped<IMesSyncDispatcher, MesSyncDispatcher>();
 builder.Services.AddHostedService<MesSyncHostedService>();
 
 var gatewayOptions = builder.Configuration.GetSection("Gateway").Get<GatewayOptions>() ?? new GatewayOptions();
@@ -63,16 +62,19 @@ Directory.CreateDirectory(gatewayOptions.DataDirectory);
 Directory.CreateDirectory(gatewayOptions.BackupDirectory);
 Directory.CreateDirectory(gatewayOptions.ExportDirectory);
 
-var connectionString = $"Data Source={Path.Combine(gatewayOptions.DataDirectory, "config.db")}";
-builder.Services.AddGatewayInfrastructure(connectionString);
+var configDatabasePath = Path.Combine(gatewayOptions.DataDirectory, SanitizeDatabaseFileName(gatewayOptions.ConfigDatabaseFileName, "config.db"));
+var oeeDatabasePath = Path.Combine(gatewayOptions.DataDirectory, SanitizeDatabaseFileName(gatewayOptions.OeeDatabaseFileName, "oee.db"));
+builder.Services.AddGatewayInfrastructure($"Data Source={configDatabasePath}", $"Data Source={oeeDatabasePath}");
 builder.Services.AddGatewayRuntime();
 
 var app = builder.Build();
 var startupLogger = app.Logger;
 startupLogger.LogInformation(
-    "Starting Rostek Gateway {GatewayId}. DataDirectory={DataDirectory}, BackupDirectory={BackupDirectory}, ExportDirectory={ExportDirectory}, GatewayHomePath={GatewayHomePath}, ExternalAppSettingsPath={ExternalAppSettingsPath}, ExternalAppSettingsCreated={ExternalAppSettingsCreated}",
+    "Starting Rostek Gateway {GatewayId}. DataDirectory={DataDirectory}, ConfigDatabasePath={ConfigDatabasePath}, OeeDatabasePath={OeeDatabasePath}, BackupDirectory={BackupDirectory}, ExportDirectory={ExportDirectory}, GatewayHomePath={GatewayHomePath}, ExternalAppSettingsPath={ExternalAppSettingsPath}, ExternalAppSettingsCreated={ExternalAppSettingsCreated}",
     gatewayOptions.GatewayId,
     gatewayOptions.DataDirectory,
+    configDatabasePath,
+    oeeDatabasePath,
     gatewayOptions.BackupDirectory,
     gatewayOptions.ExportDirectory,
     externalAppSettings.GatewayHomePath,
@@ -82,14 +84,19 @@ startupLogger.LogInformation(
 using (var scope = app.Services.CreateScope())
 {
     var initializer = scope.ServiceProvider.GetRequiredService<GatewayDbInitializer>();
-    startupLogger.LogInformation("Initializing configuration database at {DatabasePath}", Path.Combine(gatewayOptions.DataDirectory, "config.db"));
+    startupLogger.LogInformation("Initializing configuration database at {DatabasePath}", configDatabasePath);
     await initializer.InitializeAsync(CancellationToken.None);
     startupLogger.LogInformation("Configuration database initialized");
 
+    var oeeInitializer = scope.ServiceProvider.GetRequiredService<OeeDbInitializer>();
+    startupLogger.LogInformation("Initializing OEE database at {DatabasePath}", oeeDatabasePath);
+    await oeeInitializer.InitializeAsync(CancellationToken.None);
+    startupLogger.LogInformation("OEE database initialized");
+
     var oeeRepository = scope.ServiceProvider.GetRequiredService<IOeeLocalRepository>();
-    var productionContextStore = scope.ServiceProvider.GetRequiredService<IProductionContextStore>();
+    var productionContextCache = scope.ServiceProvider.GetRequiredService<IProductionContextCache>();
     var productionContexts = await oeeRepository.ListProductionContextsAsync(CancellationToken.None);
-    productionContextStore.Replace(productionContexts);
+    productionContextCache.Replace(productionContexts);
     startupLogger.LogInformation("Loaded {ProductionContextCount} production contexts into OEE memory store", productionContexts.Count);
 
     var versionService = scope.ServiceProvider.GetRequiredService<IConfigurationVersionService>();
@@ -158,8 +165,11 @@ app.MapPost("/api/v1/mes/production-commands", async (ProductionCommandRequest r
     return response.Accepted ? Results.Ok(response) : Results.BadRequest(response);
 });
 
-app.MapGet("/api/v1/mes-sync/status", async (IMesSyncOutboxRepository repository, Microsoft.Extensions.Options.IOptions<MesSyncOptions> options, CancellationToken cancellationToken) =>
-    Results.Ok(await repository.GetStatusAsync(options.Value.Enabled, cancellationToken)));
+app.MapGet("/api/v1/mes-sync/status", async (IOeeLocalRepository repository, Microsoft.Extensions.Options.IOptions<MesSyncOptions> options, CancellationToken cancellationToken) =>
+{
+    var status = await repository.GetOutboxStatusAsync(cancellationToken);
+    return Results.Ok(new MesSyncStatusDto(options.Value.Enabled, status.PendingCount, status.FailedCount, status.LastSuccess, status.LastError));
+});
 
 app.MapPost("/api/v1/configuration/validate", async (ConfigurationBuilderPort builderService, IConfigurationValidator validator, CancellationToken cancellationToken) =>
     Results.Ok(await validator.ValidateAsync(await builderService.BuildDraftAsync(cancellationToken), cancellationToken)));
@@ -209,6 +219,17 @@ static string ResolveGatewayPath(string gatewayHomePath, string? configuredPath,
     }
 
     return Path.Combine(gatewayHomePath, path);
+}
+
+static string SanitizeDatabaseFileName(string? configuredFileName, string defaultFileName)
+{
+    if (string.IsNullOrWhiteSpace(configuredFileName))
+    {
+        return defaultFileName;
+    }
+
+    var fileName = Path.GetFileName(configuredFileName);
+    return string.IsNullOrWhiteSpace(fileName) ? defaultFileName : fileName;
 }
 
 public partial class Program;

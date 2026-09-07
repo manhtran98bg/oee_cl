@@ -2,19 +2,19 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Rostek.Gateway.Application.Oee;
 using Rostek.Gateway.Contracts.Machines;
 using Rostek.Gateway.Contracts.Runtime;
-using Rostek.Gateway.UnitTests.Fakes;
+using Rostek.Gateway.UnitTests.Support;
 using Xunit;
 
 namespace Rostek.Gateway.UnitTests;
 
-public sealed class OeeRawIntervalServiceTests
+public sealed class RawDataCaptureServiceTests
 {
     [Fact]
     public async Task Capture_maps_latest_snapshot_to_python_raw_interval()
     {
         var timestamp = DateTimeOffset.FromUnixTimeSeconds(12);
         var reader = new MutableMachineValueReader();
-        var repository = new FakeOeeLocalRepository();
+        var repository = new InMemoryOeeLocalRepository();
         var service = CreateService(reader, repository);
         reader.SetSnapshots([CreateSnapshot("M16-01", timestamp, machineState: 1, shotOkCount: 100, shotNgCount: 2, cycleTimeMs: 1500, runTimeTotal: 10, stopTimeTotal: 2, errorTimeTotal: 1)]);
 
@@ -39,7 +39,7 @@ public sealed class OeeRawIntervalServiceTests
     public async Task Capture_skips_without_context_when_required()
     {
         var reader = new MutableMachineValueReader();
-        var repository = new FakeOeeLocalRepository();
+        var repository = new InMemoryOeeLocalRepository();
         var service = CreateService(reader, repository);
         reader.SetSnapshots([CreateSnapshot("M16-01", DateTimeOffset.UtcNow, shotOkCount: 100)]);
 
@@ -53,11 +53,11 @@ public sealed class OeeRawIntervalServiceTests
     public async Task Capture_uses_production_context_loaded_in_memory_when_required()
     {
         var reader = new MutableMachineValueReader();
-        var repository = new FakeOeeLocalRepository();
-        var store = new ProductionContextStore();
+        var repository = new InMemoryOeeLocalRepository();
+        var cache = new ProductionContextCache();
         await repository.EnsureTestProductionContextAsync("M16-01", 10, CancellationToken.None);
-        store.Replace(await repository.ListProductionContextsAsync(CancellationToken.None));
-        var service = CreateService(reader, repository, store);
+        cache.Replace(await repository.ListProductionContextsAsync(CancellationToken.None));
+        var service = CreateService(reader, repository, cache);
         reader.SetSnapshots([CreateSnapshot("M16-01", DateTimeOffset.FromUnixTimeSeconds(10), shotOkCount: 100)]);
 
         var inserted = await service.CaptureAsync(TimeSpan.FromSeconds(5), requireProductionContext: true, CancellationToken.None);
@@ -70,7 +70,7 @@ public sealed class OeeRawIntervalServiceTests
     {
         var timestamp = DateTimeOffset.FromUnixTimeSeconds(10);
         var reader = new MutableMachineValueReader();
-        var repository = new FakeOeeLocalRepository();
+        var repository = new InMemoryOeeLocalRepository();
         var service = CreateService(reader, repository);
         reader.SetSnapshots([CreateSnapshot("M16-01", timestamp, shotOkCount: 100)]);
         await service.CaptureAsync(TimeSpan.FromSeconds(5), false, CancellationToken.None);
@@ -81,11 +81,11 @@ public sealed class OeeRawIntervalServiceTests
         Assert.Single(repository.RawIntervals);
     }
 
-    private static OeeRawIntervalService CreateService(
+    private static RawDataCaptureService CreateService(
         MutableMachineValueReader reader,
-        FakeOeeLocalRepository repository,
-        ProductionContextStore? store = null) =>
-        new(reader, repository, store ?? new ProductionContextStore(), NullLogger<OeeRawIntervalService>.Instance);
+        InMemoryOeeLocalRepository repository,
+        ProductionContextCache? cache = null) =>
+        new(reader, repository, cache ?? new ProductionContextCache(), NullLogger<RawDataCaptureService>.Instance);
 
     private static MachineValueSnapshotDto CreateSnapshot(
         string machineCode,

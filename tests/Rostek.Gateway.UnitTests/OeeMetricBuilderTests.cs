@@ -1,7 +1,7 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using Rostek.Gateway.Application.Oee;
 using Rostek.Gateway.Domain.Entities;
-using Rostek.Gateway.UnitTests.Fakes;
+using Rostek.Gateway.UnitTests.Support;
 using Xunit;
 
 namespace Rostek.Gateway.UnitTests;
@@ -102,28 +102,28 @@ public sealed class OeeMetricBuilderTests
     [Fact]
     public async Task Raw_without_active_context_is_skipped()
     {
-        var repository = new FakeOeeLocalRepository();
+        var repository = new InMemoryOeeLocalRepository();
         repository.RawIntervals.Add(Raw("M16-01", 10, shotOkTotal: 100));
-        var builder = new OeeMetricBuilder(repository, new ProductionContextStore(), NullLogger<OeeMetricBuilder>.Instance);
+        var builder = new OeeMetricBuilder(repository, new ProductionContextCache(), NullLogger<OeeMetricBuilder>.Instance);
 
         var result = await builder.BuildMetricsAsync([Raw("M16-01", 15, shotOkTotal: 110)], CancellationToken.None);
 
         Assert.Empty(result.ProductionMetrics);
     }
 
-    private static OeeMetricBuilder CreateBuilder(FakeOeeLocalRepository repository) =>
-        new(repository, LoadedStore(repository), NullLogger<OeeMetricBuilder>.Instance);
+    private static OeeMetricBuilder CreateBuilder(InMemoryOeeLocalRepository repository) =>
+        new(repository, LoadedCache(repository), NullLogger<OeeMetricBuilder>.Instance);
 
-    private static ProductionContextStore LoadedStore(FakeOeeLocalRepository repository)
+    private static ProductionContextCache LoadedCache(InMemoryOeeLocalRepository repository)
     {
-        var store = new ProductionContextStore();
-        store.Replace(repository.Contexts.ToDictionary(context => context.Machine, StringComparer.OrdinalIgnoreCase));
-        return store;
+        var cache = new ProductionContextCache();
+        cache.Replace(repository.Contexts.ToDictionary(context => context.Machine, StringComparer.OrdinalIgnoreCase));
+        return cache;
     }
 
-    private static FakeOeeLocalRepository CreateRepository(string machine, long periodStartAt, string? productsJson = null)
+    private static InMemoryOeeLocalRepository CreateRepository(string machine, long periodStartAt, string? productsJson = null)
     {
-        var repository = new FakeOeeLocalRepository();
+        var repository = new InMemoryOeeLocalRepository();
         var context = new ProductionContext
         {
             Machine = machine,

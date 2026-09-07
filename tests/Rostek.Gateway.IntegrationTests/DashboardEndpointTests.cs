@@ -25,6 +25,8 @@ public sealed class DashboardEndpointTests
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
             Assert.Contains("\"summary\"", json);
             Assert.Contains("\"machines\"", json);
+            Assert.True(File.Exists(Path.Combine(Environment.GetEnvironmentVariable("ROSTEK_GATEWAY_HOME")!, "data", "config.db")));
+            Assert.True(File.Exists(Path.Combine(Environment.GetEnvironmentVariable("ROSTEK_GATEWAY_HOME")!, "data", "oee.db")));
         }
         finally
         {

@@ -6,19 +6,11 @@ using Rostek.Gateway.Domain.Entities;
 
 namespace Rostek.Gateway.Application.Oee;
 
-public interface IOeeRawIntervalService
-{
-    Task<IReadOnlyList<PlcRawInterval>> CaptureAsync(
-        TimeSpan interval,
-        bool requireProductionContext,
-        CancellationToken cancellationToken);
-}
-
-public sealed class OeeRawIntervalService(
+public sealed class RawDataCaptureService(
     IMachineValueReader valueReader,
     IOeeLocalRepository repository,
-    IProductionContextStore productionContextStore,
-    ILogger<OeeRawIntervalService> logger) : IOeeRawIntervalService
+    IProductionContextCache productionContextCache,
+    ILogger<RawDataCaptureService> logger) : IRawDataCaptureService
 {
     public async Task<IReadOnlyList<PlcRawInterval>> CaptureAsync(
         TimeSpan interval,
@@ -60,11 +52,11 @@ public sealed class OeeRawIntervalService(
         }
 
         var readAt = AlignToInterval(snapshot.LastReadUtc.Value.ToUniversalTime().ToUnixTimeSeconds(), intervalSeconds);
-        var context = productionContextStore.Get(snapshot.MachineCode);
+        var context = productionContextCache.Get(snapshot.MachineCode);
         if (context is null && !requireProductionContext)
         {
             context = await repository.EnsureTestProductionContextAsync(snapshot.MachineCode, readAt, cancellationToken);
-            productionContextStore.Upsert(context);
+            productionContextCache.Upsert(context);
         }
 
         if (context is null || !context.Status.Equals("active", StringComparison.OrdinalIgnoreCase))
