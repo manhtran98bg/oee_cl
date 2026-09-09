@@ -54,15 +54,22 @@ public sealed class ProductionContextCache : IProductionContextCache
         new()
         {
             Machine = context.Machine,
-            Mode = context.Mode,
-            OrderId = context.OrderId,
+            Status = context.Status,
+            OrderCode = context.OrderCode,
             ServerOrderId = context.ServerOrderId,
             ActivePeriodId = context.ActivePeriodId,
+            ActivePeriodStartAt = context.ActivePeriodStartAt,
             CurrentPlcPeriodIndex = context.CurrentPlcPeriodIndex,
             ProductsJson = context.ProductsJson,
-            TagsJson = context.TagsJson,
             ExtraJson = context.ExtraJson,
-            Status = context.Status,
+            BaselineRawId = context.BaselineRawId,
+            BaselineCapturedAt = context.BaselineCapturedAt,
+            BaselineShotOkTotal = context.BaselineShotOkTotal,
+            BaselineShotNgTotal = context.BaselineShotNgTotal,
+            BaselineRunTimeTotalSec = context.BaselineRunTimeTotalSec,
+            BaselineStopTimeTotalSec = context.BaselineStopTimeTotalSec,
+            BaselineErrorTimeTotalSec = context.BaselineErrorTimeTotalSec,
+            BaselineCycleTimeMs = context.BaselineCycleTimeMs,
             UpdatedAt = context.UpdatedAt
         };
 }

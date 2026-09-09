@@ -8,12 +8,20 @@ using Rostek.Gateway.Infrastructure.Persistence;
 namespace Rostek.Gateway.Infrastructure.Migrations;
 
 [DbContextAttribute(typeof(OeeDbContext))]
-[Migration("202609070001_InitialOeeSchema")]
-public partial class InitialOeeSchema : Migration
+[Migration("202609090001_RebuildRealtimeOeeSchema")]
+public partial class RebuildRealtimeOeeSchema : Migration
 {
     protected override void Up(MigrationBuilder migrationBuilder)
     {
         migrationBuilder.Sql("""
+            drop table if exists sync_outbox;
+            drop table if exists downtime_event;
+            drop table if exists product_metric;
+            drop table if exists production_metric;
+            drop table if exists plc_raw_interval;
+            drop table if exists production_period;
+            drop table if exists production_context;
+
             create table production_context (
                 machine TEXT not null primary key,
                 status TEXT not null default 'active',
@@ -74,9 +82,6 @@ public partial class InitialOeeSchema : Migration
             create unique index ux_plc_raw_interval_machine_read
             on plc_raw_interval(machine, read_at);
 
-            create index ix_plc_raw_interval_machine_read
-            on plc_raw_interval(machine, read_at);
-
             create index ix_plc_raw_interval_machine_period_read
             on plc_raw_interval(machine, plc_period_index, read_at);
             """);
@@ -85,13 +90,9 @@ public partial class InitialOeeSchema : Migration
     protected override void Down(MigrationBuilder migrationBuilder)
     {
         migrationBuilder.Sql("""
-            drop table if exists production_context;
-            drop table if exists production_period;
             drop table if exists plc_raw_interval;
-            drop table if exists production_metric;
-            drop table if exists product_metric;
-            drop table if exists downtime_event;
-            drop table if exists sync_outbox;
+            drop table if exists production_period;
+            drop table if exists production_context;
             """);
     }
 }

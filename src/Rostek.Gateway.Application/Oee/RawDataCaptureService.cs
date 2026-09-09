@@ -59,12 +59,12 @@ public sealed class RawDataCaptureService(
             productionContextCache.Upsert(context);
         }
 
-        if (context is null || !context.Status.Equals("active", StringComparison.OrdinalIgnoreCase))
+        if (context is null || !IsCapturableContext(context.Status))
         {
             return null;
         }
 
-        await repository.EnsureTestProductionPeriodAsync(context, readAt, cancellationToken);
+        await repository.EnsureProductionPeriodAsync(context, context.ActivePeriodStartAt > 0 ? context.ActivePeriodStartAt : readAt, cancellationToken);
 
         var signals = snapshot.Values
             .GroupBy(value => value.SignalCode, StringComparer.OrdinalIgnoreCase)
@@ -85,9 +85,13 @@ public sealed class RawDataCaptureService(
             StopTimeTotalSec = ReadInt64(signals, OeeSignalCodes.StopTimeTotal) ?? 0,
             ErrorTimeTotalSec = ReadInt64(signals, OeeSignalCodes.ErrorTimeTotal) ?? 0,
             CycleTimeMs = ReadInt32(signals, OeeSignalCodes.CycleTimeMs) ?? 0,
-            PeriodActive = context.Status.Equals("active", StringComparison.OrdinalIgnoreCase) ? 1 : 0
+            PeriodActive = IsCapturableContext(context.Status) ? 1 : 0
         };
     }
+
+    private static bool IsCapturableContext(string status) =>
+        status.Equals("active", StringComparison.OrdinalIgnoreCase) ||
+        status.Equals("pause", StringComparison.OrdinalIgnoreCase);
 
     private static string ReadRunState(IReadOnlyDictionary<string, SignalValueDto> signals)
     {

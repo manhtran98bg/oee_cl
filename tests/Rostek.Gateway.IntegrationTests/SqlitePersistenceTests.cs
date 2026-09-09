@@ -40,10 +40,10 @@ public sealed class SqlitePersistenceTests
         Assert.Contains("production_context", tableNames);
         Assert.Contains("production_period", tableNames);
         Assert.Contains("plc_raw_interval", tableNames);
-        Assert.Contains("production_metric", tableNames);
-        Assert.Contains("product_metric", tableNames);
-        Assert.Contains("downtime_event", tableNames);
-        Assert.Contains("sync_outbox", tableNames);
+        Assert.DoesNotContain("production_metric", tableNames);
+        Assert.DoesNotContain("product_metric", tableNames);
+        Assert.DoesNotContain("downtime_event", tableNames);
+        Assert.DoesNotContain("sync_outbox", tableNames);
         Assert.DoesNotContain("Machines", tableNames);
         Assert.DoesNotContain("TemplateSignals", tableNames);
     }
@@ -136,7 +136,7 @@ public sealed class SqlitePersistenceTests
     }
 
     [Fact]
-    public async Task Oee_local_repository_inserts_missing_and_reads_previous_by_plc_period()
+    public async Task Oee_local_repository_inserts_missing_raw_intervals_and_context_period()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
@@ -144,74 +144,18 @@ public sealed class SqlitePersistenceTests
         await db.Database.EnsureCreatedAsync();
         var repository = new EfCoreOeeLocalRepository(db);
 
+        var context = await repository.EnsureTestProductionContextAsync("M16-01", 10, CancellationToken.None);
+        var period = await repository.EnsureProductionPeriodAsync(context, 10, CancellationToken.None);
         var insertedFirst = await repository.InsertMissingRawIntervalsAsync([Raw("M16-01", 10, 100)], CancellationToken.None);
         var duplicate = await repository.InsertMissingRawIntervalsAsync([Raw("M16-01", 10, 101)], CancellationToken.None);
         var insertedSecond = await repository.InsertMissingRawIntervalsAsync([Raw("M16-01", 15, 108)], CancellationToken.None);
-        var previous = await repository.GetPreviousRawInPeriodAsync("M16-01", 1, 0, 15, CancellationToken.None);
 
+        Assert.Equal("TEST_ORDER", context.OrderCode);
+        Assert.Equal(context.ActivePeriodId, period.PeriodId);
         Assert.Single(insertedFirst);
         Assert.Empty(duplicate);
         Assert.Single(insertedSecond);
-        Assert.NotNull(previous);
-        Assert.Equal(100, previous.ShotOkTotal);
-    }
-
-    [Fact]
-    public async Task Local_pipeline_can_create_context_period_metric_product_metric_and_outbox()
-    {
-        await using var connection = new SqliteConnection("Data Source=:memory:");
-        await connection.OpenAsync();
-        await using var db = CreateOeeContext(connection);
-        await db.Database.EnsureCreatedAsync();
-        var repository = new EfCoreOeeLocalRepository(db);
-        var context = await repository.EnsureTestProductionContextAsync("M16-01", 10, CancellationToken.None);
-        await repository.EnsureTestProductionPeriodAsync(context, 10, CancellationToken.None);
-        await repository.InsertMissingRawIntervalsAsync([Raw("M16-01", 10, 100, runTimeTotalSec: 10)], CancellationToken.None);
-        var current = Raw("M16-01", 15, 108, runTimeTotalSec: 15);
-        await repository.InsertMissingRawIntervalsAsync([current], CancellationToken.None);
-        var cache = new ProductionContextCache();
-        cache.Replace(await repository.ListProductionContextsAsync(CancellationToken.None));
-        var builder = new OeeMetricBuilder(repository, cache, Microsoft.Extensions.Logging.Abstractions.NullLogger<OeeMetricBuilder>.Instance);
-
-        var result = await builder.BuildMetricsAsync([current], CancellationToken.None);
-        foreach (var metric in result.ProductionMetrics)
-        {
-            await repository.EnqueueOutboxAsync(new MesSyncOutboxMessage
-            {
-                Topic = $"metric.{metric.MetricType}",
-                SourceTable = "production_metric",
-                SourceId = $"{metric.MetricType}|{metric.PeriodId}|{metric.ProductId}|{metric.RunState}|{metric.StartAt}",
-                PayloadJson = "{}",
-                CreatedAt = metric.CreatedAt,
-                UpdatedAt = metric.UpdatedAt
-            }, CancellationToken.None);
-        }
-
-        Assert.True(await db.ProductionMetrics.CountAsync() > 0);
-        Assert.Single(await db.ProductMetrics.ToListAsync());
-        Assert.True(await db.MesSyncOutboxMessages.CountAsync() > 0);
-    }
-
-    [Fact]
-    public async Task Oee_local_repository_reads_outbox_status_without_sqlite_translation_error()
-    {
-        await using var connection = new SqliteConnection("Data Source=:memory:");
-        await connection.OpenAsync();
-        await using var db = CreateOeeContext(connection);
-        await db.Database.EnsureCreatedAsync();
-        var repository = new EfCoreOeeLocalRepository(db);
-        db.MesSyncOutboxMessages.AddRange(
-            OutboxMessage("failed", 11, "network"),
-            OutboxMessage("pending", 10),
-            OutboxMessage("synced", 9));
-        await db.SaveChangesAsync();
-
-        var status = await repository.GetOutboxStatusAsync(CancellationToken.None);
-
-        Assert.Equal(1, status.PendingCount);
-        Assert.Equal(1, status.FailedCount);
-        Assert.Equal(9, status.LastSuccess);
-        Assert.Equal("network", status.LastError);
+        Assert.Equal(2, await db.PlcRawIntervals.CountAsync());
     }
 
     [Fact]
@@ -290,17 +234,4 @@ public sealed class SqlitePersistenceTests
             PeriodActive = 1
         };
 
-    private static MesSyncOutboxMessage OutboxMessage(string status, long updatedAt, string lastError = "") =>
-        new()
-        {
-            Topic = "metric.second",
-            SourceTable = "production_metric",
-            SourceId = Guid.NewGuid().ToString("N"),
-            PayloadJson = "{}",
-            Status = status,
-            LastError = lastError,
-            SyncedAt = status == "synced" ? updatedAt : 0,
-            CreatedAt = updatedAt,
-            UpdatedAt = updatedAt
-        };
 }

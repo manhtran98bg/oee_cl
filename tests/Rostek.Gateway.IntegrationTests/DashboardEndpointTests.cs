@@ -1,7 +1,11 @@
 using System.Net;
 using System.Net.Http.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.DependencyInjection;
 using Rostek.Gateway.Application.MesSync;
+using Rostek.Gateway.Domain.Entities;
+using Rostek.Gateway.Domain.Enums;
+using Rostek.Gateway.Infrastructure.Persistence;
 using Xunit;
 
 namespace Rostek.Gateway.IntegrationTests;
@@ -44,20 +48,70 @@ public sealed class DashboardEndpointTests
         {
             await using var factory = new WebApplicationFactory<Program>();
             using var client = factory.CreateClient();
+            await SeedMachineAsync(factory, "M16-01");
 
             var commandResponse = await client.PostAsJsonAsync(
                 "/api/v1/mes/production-commands",
-                new ProductionCommandRequest("M16-01", "CMD-001", "start", DateTimeOffset.UtcNow.ToUnixTimeSeconds(), "MO-001", "SESSION-001", "OP-01", null, null));
+                new ProductionCommandRequest
+                {
+                    MachineCode = "M16-01",
+                    MachineName = "Máy đúc M16-01",
+                    CommandCode = "CMD-001",
+                    Action = "start",
+                    OccurredAtUnixTimeSeconds = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    ProductionOrderCode = "MO-001",
+                    Products =
+                    [
+                        new ProductionCommandProduct
+                        {
+                            ProductCode = "SP-001",
+                            ProductName = "Vỏ nhựa A",
+                            MoldCode = "KHUON-001",
+                            Cavity = 4,
+                            CycleTimeSeconds = 12.5m
+                        }
+                    ]
+                });
             var statusResponse = await client.GetAsync("/api/v1/mes-sync/status");
 
             Assert.Equal(HttpStatusCode.OK, commandResponse.StatusCode);
             Assert.Equal(HttpStatusCode.OK, statusResponse.StatusCode);
             Assert.Contains("\"enabled\":false", await statusResponse.Content.ReadAsStringAsync());
+            await AssertProductionContextSavedToOeeDbAsync(factory, "M16-01");
         }
         finally
         {
             Environment.SetEnvironmentVariable("ROSTEK_GATEWAY_HOME", previousGatewayHome);
         }
+    }
+
+    private static async Task SeedMachineAsync(WebApplicationFactory<Program> factory, string machineCode)
+    {
+        using var scope = factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<GatewayDbContext>();
+        var template = new MachineTemplate
+        {
+            Code = "TPL-MODBUS",
+            Name = "Template Modbus",
+            Protocol = GatewayProtocol.ModbusTcp
+        };
+        await dbContext.MachineTemplates.AddAsync(template);
+        await dbContext.Machines.AddAsync(new Machine
+        {
+            Code = machineCode,
+            Name = machineCode,
+            TemplateId = template.Id
+        });
+        await dbContext.SaveChangesAsync();
+    }
+
+    private static async Task AssertProductionContextSavedToOeeDbAsync(WebApplicationFactory<Program> factory, string machineCode)
+    {
+        using var scope = factory.Services.CreateScope();
+        var oeeDbContext = scope.ServiceProvider.GetRequiredService<OeeDbContext>();
+        var context = await oeeDbContext.ProductionContexts.FindAsync(machineCode);
+        Assert.NotNull(context);
+        Assert.Equal("active", context.Status);
     }
 
     private static string CreateTempGatewayHome() =>

@@ -8,10 +8,6 @@ public sealed class InMemoryOeeLocalRepository : IOeeLocalRepository
     public List<ProductionContext> Contexts { get; } = [];
     public List<ProductionPeriod> Periods { get; } = [];
     public List<PlcRawInterval> RawIntervals { get; } = [];
-    public List<ProductionMetric> ProductionMetrics { get; } = [];
-    public List<ProductMetric> ProductMetrics { get; } = [];
-    public List<DowntimeEvent> DowntimeEvents { get; } = [];
-    public List<MesSyncOutboxMessage> OutboxMessages { get; } = [];
 
     public Task<ProductionContext?> GetProductionContextAsync(string machine, CancellationToken cancellationToken) =>
         Task.FromResult(Contexts.FirstOrDefault(context => context.Machine.Equals(machine, StringComparison.OrdinalIgnoreCase)));
@@ -31,15 +27,14 @@ public sealed class InMemoryOeeLocalRepository : IOeeLocalRepository
         context = new ProductionContext
         {
             Machine = machine,
-            Mode = OeeTestProductionContext.Mode,
-            OrderId = OeeTestProductionContext.OrderId,
+            Status = "active",
+            OrderCode = OeeTestProductionContext.OrderCode,
             ServerOrderId = OeeTestProductionContext.ServerOrderId,
             ActivePeriodId = $"{machine}-{OeeTestProductionContext.PeriodId}",
+            ActivePeriodStartAt = startAt,
             CurrentPlcPeriodIndex = OeeTestProductionContext.PlcPeriodIndex,
             ProductsJson = OeeTestProductionContext.ProductsJson,
-            TagsJson = OeeTestProductionContext.TagsJson,
             ExtraJson = OeeTestProductionContext.ExtraJson,
-            Status = "active",
             UpdatedAt = startAt
         };
         Contexts.Add(context);
@@ -56,7 +51,7 @@ public sealed class InMemoryOeeLocalRepository : IOeeLocalRepository
     public Task<ProductionPeriod?> GetProductionPeriodAsync(string periodId, CancellationToken cancellationToken) =>
         Task.FromResult(Periods.FirstOrDefault(period => period.PeriodId == periodId));
 
-    public Task<ProductionPeriod> EnsureTestProductionPeriodAsync(ProductionContext context, long startAt, CancellationToken cancellationToken)
+    public Task<ProductionPeriod> EnsureProductionPeriodAsync(ProductionContext context, long startAt, CancellationToken cancellationToken)
     {
         var period = Periods.FirstOrDefault(item => item.PeriodId == context.ActivePeriodId);
         if (period is not null)
@@ -69,19 +64,40 @@ public sealed class InMemoryOeeLocalRepository : IOeeLocalRepository
             PeriodId = context.ActivePeriodId,
             Machine = context.Machine,
             PlcPeriodIndex = context.CurrentPlcPeriodIndex,
-            Mode = context.Mode,
-            OrderId = context.OrderId,
+            OrderCode = context.OrderCode,
             ServerOrderId = context.ServerOrderId,
             ProductsJson = context.ProductsJson,
-            TagsJson = context.TagsJson,
             ExtraJson = context.ExtraJson,
             StartAt = startAt,
-            Status = "active",
+            Status = context.Status,
             CreatedAt = startAt,
             UpdatedAt = startAt
         };
         Periods.Add(period);
         return Task.FromResult(period);
+    }
+
+    public Task<int> GetNextPlcPeriodIndexAsync(string machine, string orderCode, CancellationToken cancellationToken)
+    {
+        var currentMax = Periods
+            .Where(period => period.Machine.Equals(machine, StringComparison.OrdinalIgnoreCase) && period.OrderCode == orderCode)
+            .Select(period => (int?)period.PlcPeriodIndex)
+            .DefaultIfEmpty()
+            .Max();
+        return Task.FromResult((currentMax ?? 0) + 1);
+    }
+
+    public Task CloseProductionPeriodAsync(string periodId, long endAt, string status, CancellationToken cancellationToken)
+    {
+        var period = Periods.FirstOrDefault(item => item.PeriodId == periodId);
+        if (period is not null)
+        {
+            period.EndAt = endAt;
+            period.Status = status;
+            period.UpdatedAt = endAt;
+        }
+
+        return Task.CompletedTask;
     }
 
     public Task<IReadOnlyList<PlcRawInterval>> InsertMissingRawIntervalsAsync(IReadOnlyCollection<PlcRawInterval> rawIntervals, CancellationToken cancellationToken)
@@ -92,92 +108,4 @@ public sealed class InMemoryOeeLocalRepository : IOeeLocalRepository
         RawIntervals.AddRange(inserted);
         return Task.FromResult<IReadOnlyList<PlcRawInterval>>(inserted);
     }
-
-    public Task<PlcRawInterval?> GetPreviousRawInPeriodAsync(string machine, int plcPeriodIndex, long periodStartAt, long beforeReadAt, CancellationToken cancellationToken) =>
-        Task.FromResult(RawIntervals
-            .Where(raw =>
-                raw.Machine.Equals(machine, StringComparison.OrdinalIgnoreCase) &&
-                raw.PlcPeriodIndex == plcPeriodIndex &&
-                raw.ReadAt >= periodStartAt &&
-                raw.ReadAt < beforeReadAt)
-            .OrderByDescending(raw => raw.ReadAt)
-            .FirstOrDefault());
-
-    public Task<PlcRawInterval?> GetFirstRawInRangeAsync(string machine, int plcPeriodIndex, long startAt, long beforeReadAt, CancellationToken cancellationToken) =>
-        Task.FromResult(RawIntervals
-            .Where(raw =>
-                raw.Machine.Equals(machine, StringComparison.OrdinalIgnoreCase) &&
-                raw.PlcPeriodIndex == plcPeriodIndex &&
-                raw.ReadAt >= startAt &&
-                raw.ReadAt < beforeReadAt)
-            .OrderBy(raw => raw.ReadAt)
-            .FirstOrDefault());
-
-    public Task<ProductionMetric?> GetProductionMetricAsync(string metricType, string periodId, string productId, string runState, long startAt, CancellationToken cancellationToken) =>
-        Task.FromResult(ProductionMetrics.FirstOrDefault(metric =>
-            metric.MetricType == metricType &&
-            metric.PeriodId == periodId &&
-            metric.ProductId == productId &&
-            metric.RunState == runState &&
-            metric.StartAt == startAt));
-
-    public Task<ProductionMetric?> GetLatestStateMetricAsync(string machine, string periodId, string productId, string runState, long beforeStartAt, CancellationToken cancellationToken) =>
-        Task.FromResult(ProductionMetrics
-            .Where(metric =>
-                metric.MetricType == OeeMetricTypes.State &&
-                metric.Machine.Equals(machine, StringComparison.OrdinalIgnoreCase) &&
-                metric.PeriodId == periodId &&
-                metric.ProductId == productId &&
-                metric.RunState == runState &&
-                metric.StartAt < beforeStartAt)
-            .OrderByDescending(metric => metric.EndAt)
-            .FirstOrDefault());
-
-    public Task UpsertProductionMetricAsync(ProductionMetric metric, CancellationToken cancellationToken)
-    {
-        ProductionMetrics.RemoveAll(item =>
-            item.MetricType == metric.MetricType &&
-            item.PeriodId == metric.PeriodId &&
-            item.ProductId == metric.ProductId &&
-            item.RunState == metric.RunState &&
-            item.StartAt == metric.StartAt);
-        ProductionMetrics.Add(metric);
-        return Task.CompletedTask;
-    }
-
-    public Task<IReadOnlyList<ProductionMetric>> ListPeriodMetricsAsync(string orderId, string productId, CancellationToken cancellationToken) =>
-        Task.FromResult<IReadOnlyList<ProductionMetric>>(ProductionMetrics
-            .Where(metric => metric.MetricType == OeeMetricTypes.Period && metric.OrderId == orderId && metric.ProductId == productId)
-            .ToList());
-
-    public Task UpsertProductMetricAsync(ProductMetric metric, CancellationToken cancellationToken)
-    {
-        ProductMetrics.RemoveAll(item => item.OrderId == metric.OrderId && item.ProductId == metric.ProductId);
-        ProductMetrics.Add(metric);
-        return Task.CompletedTask;
-    }
-
-    public Task<DowntimeEvent?> GetOpenDowntimeEventAsync(string machine, string periodId, CancellationToken cancellationToken) =>
-        Task.FromResult(DowntimeEvents.FirstOrDefault(item => item.Machine.Equals(machine, StringComparison.OrdinalIgnoreCase) && item.PeriodId == periodId && item.EndAt == 0));
-
-    public Task UpsertDowntimeEventAsync(DowntimeEvent downtimeEvent, CancellationToken cancellationToken)
-    {
-        DowntimeEvents.RemoveAll(item => item.Id == downtimeEvent.Id);
-        DowntimeEvents.Add(downtimeEvent);
-        return Task.CompletedTask;
-    }
-
-    public Task EnqueueOutboxAsync(MesSyncOutboxMessage message, CancellationToken cancellationToken)
-    {
-        OutboxMessages.RemoveAll(item => item.Topic == message.Topic && item.SourceTable == message.SourceTable && item.SourceId == message.SourceId && item.Status != "synced");
-        OutboxMessages.Add(message);
-        return Task.CompletedTask;
-    }
-
-    public Task<(int PendingCount, int FailedCount, long? LastSuccess, string? LastError)> GetOutboxStatusAsync(CancellationToken cancellationToken) =>
-        Task.FromResult((
-            OutboxMessages.Count(item => item.Status is "pending" or "sending"),
-            OutboxMessages.Count(item => item.Status == "failed"),
-            OutboxMessages.Where(item => item.Status == "synced").OrderByDescending(item => item.SyncedAt).Select(item => (long?)item.SyncedAt).FirstOrDefault(),
-            OutboxMessages.Where(item => item.Status == "failed" && item.LastError.Length > 0).OrderByDescending(item => item.UpdatedAt).Select(item => item.LastError).FirstOrDefault()));
 }

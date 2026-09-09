@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using Rostek.Gateway.Domain.Entities;
 
@@ -16,23 +17,12 @@ public static class OeeSignalCodes
 
 public static class OeeTestProductionContext
 {
-    public const string Mode = "production";
-    public const string OrderId = "TEST_ORDER";
+    public const string OrderCode = "TEST_ORDER";
     public const string ServerOrderId = "TEST_SERVER_ORDER";
     public const string PeriodId = "TEST_SESSION";
     public const int PlcPeriodIndex = 1;
     public const string ProductsJson = """[{"product_id":"TEST_PRODUCT","gain":1.0,"cycle_time":1.0,"target":0}]""";
-    public const string TagsJson = "[]";
     public const string ExtraJson = "{}";
-}
-
-public static class OeeMetricTypes
-{
-    public const string Second = "second";
-    public const string State = "state";
-    public const string Period = "period";
-    public const string Hour = "hour";
-    public const string Day = "day";
 }
 
 public static class OeeRunStates
@@ -57,6 +47,12 @@ public sealed class OeeProductDefinition
     [JsonPropertyName("product_id")]
     public string ProductId { get; init; } = string.Empty;
 
+    [JsonPropertyName("product_name")]
+    public string? ProductName { get; init; }
+
+    [JsonPropertyName("mold_code")]
+    public string? MoldCode { get; init; }
+
     [JsonPropertyName("gain")]
     public decimal Gain { get; init; } = 1m;
 
@@ -69,52 +65,12 @@ public sealed class OeeProductDefinition
     [JsonPropertyName("target")]
     public int Target { get; init; }
 
+    [JsonPropertyName("extra")]
+    public JsonElement? Extra { get; init; }
+
     [JsonIgnore]
     public decimal EffectiveCycleTime => CycleTime > 0 ? CycleTime : LegacyCycle;
 }
-
-public sealed record OeeBuildResult(
-    IReadOnlyList<ProductionMetric> ProductionMetrics,
-    IReadOnlyList<ProductMetric> ProductMetrics,
-    IReadOnlyList<DowntimeEvent> DowntimeEvents)
-{
-    public int ProductionMetricCount => ProductionMetrics.Count;
-    public int ProductMetricCount => ProductMetrics.Count;
-    public int DowntimeEventCount => DowntimeEvents.Count;
-}
-
-public sealed record MesOutboxBuildResult(
-    int RawIntervalCount,
-    int ProductionMetricCount,
-    int ProductMetricCount,
-    int DowntimeEventCount,
-    int OutboxCount);
-
-public sealed record OeeMetricPayload(
-    [property: JsonPropertyName("mode")] string Mode,
-    [property: JsonPropertyName("machine")] string Machine,
-    [property: JsonPropertyName("version")] string Version,
-    [property: JsonPropertyName("period_id")] string PeriodId,
-    [property: JsonPropertyName("order_id")] string OrderId,
-    [property: JsonPropertyName("tag")] string Tag,
-    [property: JsonPropertyName("total")] int Total,
-    [property: JsonPropertyName("run_time")] int RunTime,
-    [property: JsonPropertyName("error_time")] int ErrorTime,
-    [property: JsonPropertyName("stop_time")] int StopTime,
-    [property: JsonPropertyName("prod_time")] int ProdTime,
-    [property: JsonPropertyName("plan")] decimal Plan,
-    [property: JsonPropertyName("A")] decimal Availability,
-    [property: JsonPropertyName("P")] decimal Performance,
-    [property: JsonPropertyName("Q")] decimal Quality,
-    [property: JsonPropertyName("cycle")] decimal Cycle,
-    [property: JsonPropertyName("OEE")] decimal Oee,
-    [property: JsonPropertyName("product_id")] string ProductId,
-    [property: JsonPropertyName("start_at")] long StartAt,
-    [property: JsonPropertyName("end_at")] long EndAt,
-    [property: JsonPropertyName("updated_at")] long UpdatedAt,
-    [property: JsonPropertyName("count_check")] int? CountCheck,
-    [property: JsonPropertyName("ng")] int? Ng,
-    [property: JsonPropertyName("_sync_target")] string SyncTarget);
 
 public interface IRawDataCaptureService
 {
@@ -122,9 +78,4 @@ public interface IRawDataCaptureService
         TimeSpan interval,
         bool requireProductionContext,
         CancellationToken cancellationToken);
-}
-
-public interface IOeeMetricBuilder
-{
-    Task<OeeBuildResult> BuildMetricsAsync(IReadOnlyCollection<PlcRawInterval> currentRawIntervals, CancellationToken cancellationToken);
 }

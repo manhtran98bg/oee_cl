@@ -21,7 +21,7 @@ public sealed class MesSyncHostedService(
 
         var interval = TimeSpan.FromMilliseconds(Math.Max(1000, current.SyncIntervalMs));
         logger.LogInformation(
-            "Local MES OEE pipeline started. SyncIntervalMs={SyncIntervalMs}, BatchSize={BatchSize}, RequireProductionContext={RequireProductionContext}",
+            "Realtime MES OEE snapshot sync started. SyncIntervalMs={SyncIntervalMs}, BatchSize={BatchSize}, RequireProductionContext={RequireProductionContext}",
             (int)interval.TotalMilliseconds,
             current.BatchSize,
             current.RequireProductionContext);
@@ -49,8 +49,8 @@ public sealed class MesSyncHostedService(
         try
         {
             using var scope = scopeFactory.CreateScope();
-            var outboxService = scope.ServiceProvider.GetRequiredService<IMesSyncOutboxService>();
-            await outboxService.EnqueueLocalOeeAsync(gatewayOptions.Value.GatewayId, stoppingToken);
+            var realtimeSyncService = scope.ServiceProvider.GetRequiredService<IRealtimeSnapshotSyncService>();
+            await realtimeSyncService.SyncAsync(gatewayOptions.Value.GatewayId, stoppingToken);
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {

@@ -48,10 +48,11 @@ builder.Services.AddScoped<IConfigurationVersionService, ConfigurationVersionSer
 builder.Services.AddScoped<IConfigurationImportExportService, ConfigurationImportExportService>();
 builder.Services.AddScoped<IDashboardService, DashboardService>();
 builder.Services.AddScoped<IRawDataCaptureService, RawDataCaptureService>();
-builder.Services.AddScoped<IOeeMetricBuilder, OeeMetricBuilder>();
+builder.Services.AddScoped<IRealtimeSnapshotBuilder, RealtimeSnapshotBuilder>();
+builder.Services.AddScoped<IRealtimeSnapshotSyncService, RealtimeSnapshotSyncService>();
 builder.Services.AddSingleton<IProductionContextCache, ProductionContextCache>();
+builder.Services.AddSingleton<IRealtimeSnapshotSyncStatusStore, RealtimeSnapshotSyncStatusStore>();
 builder.Services.AddScoped<IProductionCommandService, ProductionCommandService>();
-builder.Services.AddScoped<IMesSyncOutboxService, MesSyncOutboxService>();
 builder.Services.AddHostedService<MesSyncHostedService>();
 
 var gatewayOptions = builder.Configuration.GetSection("Gateway").Get<GatewayOptions>() ?? new GatewayOptions();
@@ -98,6 +99,20 @@ using (var scope = app.Services.CreateScope())
     var productionContexts = await oeeRepository.ListProductionContextsAsync(CancellationToken.None);
     productionContextCache.Replace(productionContexts);
     startupLogger.LogInformation("Loaded {ProductionContextCount} production contexts into OEE memory store", productionContexts.Count);
+    foreach (var context in productionContexts.Values.OrderBy(context => context.Machine, StringComparer.OrdinalIgnoreCase))
+    {
+        startupLogger.LogInformation(
+            "Loaded production context. Machine={Machine}, Status={Status}, OrderCode={OrderCode}, SessionId={SessionId}, ActivePeriodStartAt={ActivePeriodStartAt}, PlcPeriodIndex={PlcPeriodIndex}, BaselineRawId={BaselineRawId}, BaselineCapturedAt={BaselineCapturedAt}, ProductsJson={ProductsJson}",
+            context.Machine,
+            context.Status,
+            context.OrderCode,
+            context.ActivePeriodId,
+            context.ActivePeriodStartAt,
+            context.CurrentPlcPeriodIndex,
+            context.BaselineRawId,
+            context.BaselineCapturedAt,
+            context.ProductsJson);
+    }
 
     var versionService = scope.ServiceProvider.GetRequiredService<IConfigurationVersionService>();
     var active = await versionService.GetActiveAsync(CancellationToken.None);
@@ -165,10 +180,15 @@ app.MapPost("/api/v1/mes/production-commands", async (ProductionCommandRequest r
     return response.Accepted ? Results.Ok(response) : Results.BadRequest(response);
 });
 
-app.MapGet("/api/v1/mes-sync/status", async (IOeeLocalRepository repository, Microsoft.Extensions.Options.IOptions<MesSyncOptions> options, CancellationToken cancellationToken) =>
+app.MapGet("/api/v1/mes-sync/status", (IRealtimeSnapshotSyncStatusStore statusStore, Microsoft.Extensions.Options.IOptions<MesSyncOptions> options) =>
 {
-    var status = await repository.GetOutboxStatusAsync(cancellationToken);
-    return Results.Ok(new MesSyncStatusDto(options.Value.Enabled, status.PendingCount, status.FailedCount, status.LastSuccess, status.LastError));
+    var status = statusStore.Current;
+    return Results.Ok(new MesSyncStatusDto(
+        options.Value.Enabled,
+        status.LastSuccessUnixTimeSeconds,
+        status.LastError,
+        status.LastItemCount,
+        status.DroppedBatchCount));
 });
 
 app.MapPost("/api/v1/configuration/validate", async (ConfigurationBuilderPort builderService, IConfigurationValidator validator, CancellationToken cancellationToken) =>

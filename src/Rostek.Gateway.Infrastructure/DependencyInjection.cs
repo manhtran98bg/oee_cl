@@ -1,7 +1,9 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Rostek.Gateway.Application.MesSync;
 using Rostek.Gateway.Application.Oee;
 using Rostek.Gateway.Application.Ports;
+using Rostek.Gateway.Infrastructure.MesSync;
 using Rostek.Gateway.Infrastructure.Oee;
 using Rostek.Gateway.Infrastructure.Persistence;
 using Rostek.Gateway.Infrastructure.Repositories;
@@ -18,6 +20,8 @@ public static class DependencyInjection
         services.AddScoped<OeeDbInitializer>();
         services.AddScoped<IConfigRepository, EfCoreConfigRepository>();
         services.AddScoped<IOeeLocalRepository, EfCoreOeeLocalRepository>();
+        services.AddSingleton<HttpClient>();
+        services.AddScoped<IRealtimeSnapshotClient, HttpRealtimeSnapshotClient>();
         return services;
     }
 }
