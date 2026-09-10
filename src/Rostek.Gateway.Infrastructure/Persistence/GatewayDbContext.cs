@@ -1,6 +1,5 @@
 using Microsoft.EntityFrameworkCore;
 using Rostek.Gateway.Domain.Entities;
-using Rostek.Gateway.Domain.Enums;
 
 namespace Rostek.Gateway.Infrastructure.Persistence;
 

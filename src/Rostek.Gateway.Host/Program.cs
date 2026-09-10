@@ -1,9 +1,10 @@
 using Rostek.Gateway.Application.Configurations;
 using Rostek.Gateway.Application.Dashboard;
-using Rostek.Gateway.Application.History;
 using Rostek.Gateway.Application.MachineGroups;
 using Rostek.Gateway.Application.Machines;
 using Rostek.Gateway.Application.MachineTemplates;
+using Rostek.Gateway.Application.MesSync;
+using Rostek.Gateway.Application.Oee;
 using Rostek.Gateway.Application.Ports;
 using Rostek.Gateway.Contracts.Configuration;
 using Rostek.Gateway.Contracts.Runtime;
@@ -26,12 +27,12 @@ builder.Configuration
 builder.Services.Configure<GatewayOptions>(builder.Configuration.GetSection("Gateway"));
 builder.Services.PostConfigure<GatewayOptions>(options =>
 {
-    options.DataDirectory = ResolveGatewayPath(options.DataDirectory, "data");
-    options.BackupDirectory = ResolveGatewayPath(options.BackupDirectory, "backups");
-    options.ExportDirectory = ResolveGatewayPath(options.ExportDirectory, "exports");
+    options.DataDirectory = ResolveGatewayPath(externalAppSettings.GatewayHomePath, options.DataDirectory, "data");
+    options.BackupDirectory = ResolveGatewayPath(externalAppSettings.GatewayHomePath, options.BackupDirectory, "backups");
+    options.ExportDirectory = ResolveGatewayPath(externalAppSettings.GatewayHomePath, options.ExportDirectory, "exports");
 });
 builder.Services.Configure<RuntimeOptions>(builder.Configuration.GetSection("Runtime"));
-builder.Services.Configure<HistoryOptions>(builder.Configuration.GetSection("History"));
+builder.Services.Configure<MesSyncOptions>(builder.Configuration.GetSection("MesSync"));
 builder.Services.AddRazorPages();
 builder.Services.AddAntiforgery();
 builder.Services.AddHealthChecks();
@@ -46,27 +47,35 @@ builder.Services.AddScoped<IConfigurationApplyService, ConfigurationApplyService
 builder.Services.AddScoped<IConfigurationVersionService, ConfigurationVersionService>();
 builder.Services.AddScoped<IConfigurationImportExportService, ConfigurationImportExportService>();
 builder.Services.AddScoped<IDashboardService, DashboardService>();
-builder.Services.AddSingleton<IDeviceHistorySampler, DeviceHistorySampler>();
-builder.Services.AddHostedService<DeviceHistoryHostedService>();
+builder.Services.AddScoped<IRawDataCaptureService, RawDataCaptureService>();
+builder.Services.AddScoped<IRealtimeSnapshotBuilder, RealtimeSnapshotBuilder>();
+builder.Services.AddScoped<IRealtimeSnapshotSyncService, RealtimeSnapshotSyncService>();
+builder.Services.AddSingleton<IProductionContextCache, ProductionContextCache>();
+builder.Services.AddSingleton<IRealtimeSnapshotSyncStatusStore, RealtimeSnapshotSyncStatusStore>();
+builder.Services.AddScoped<IProductionCommandService, ProductionCommandService>();
+builder.Services.AddHostedService<MesSyncHostedService>();
 
 var gatewayOptions = builder.Configuration.GetSection("Gateway").Get<GatewayOptions>() ?? new GatewayOptions();
-gatewayOptions.DataDirectory = ResolveGatewayPath(gatewayOptions.DataDirectory, "data");
-gatewayOptions.BackupDirectory = ResolveGatewayPath(gatewayOptions.BackupDirectory, "backups");
-gatewayOptions.ExportDirectory = ResolveGatewayPath(gatewayOptions.ExportDirectory, "exports");
+gatewayOptions.DataDirectory = ResolveGatewayPath(externalAppSettings.GatewayHomePath, gatewayOptions.DataDirectory, "data");
+gatewayOptions.BackupDirectory = ResolveGatewayPath(externalAppSettings.GatewayHomePath, gatewayOptions.BackupDirectory, "backups");
+gatewayOptions.ExportDirectory = ResolveGatewayPath(externalAppSettings.GatewayHomePath, gatewayOptions.ExportDirectory, "exports");
 Directory.CreateDirectory(gatewayOptions.DataDirectory);
 Directory.CreateDirectory(gatewayOptions.BackupDirectory);
 Directory.CreateDirectory(gatewayOptions.ExportDirectory);
 
-var connectionString = $"Data Source={Path.Combine(gatewayOptions.DataDirectory, "config.db")}";
-builder.Services.AddGatewayInfrastructure(connectionString);
+var configDatabasePath = Path.Combine(gatewayOptions.DataDirectory, SanitizeDatabaseFileName(gatewayOptions.ConfigDatabaseFileName, "config.db"));
+var oeeDatabasePath = Path.Combine(gatewayOptions.DataDirectory, SanitizeDatabaseFileName(gatewayOptions.OeeDatabaseFileName, "oee.db"));
+builder.Services.AddGatewayInfrastructure($"Data Source={configDatabasePath}", $"Data Source={oeeDatabasePath}");
 builder.Services.AddGatewayRuntime();
 
 var app = builder.Build();
 var startupLogger = app.Logger;
 startupLogger.LogInformation(
-    "Starting Rostek Gateway {GatewayId}. DataDirectory={DataDirectory}, BackupDirectory={BackupDirectory}, ExportDirectory={ExportDirectory}, GatewayHomePath={GatewayHomePath}, ExternalAppSettingsPath={ExternalAppSettingsPath}, ExternalAppSettingsCreated={ExternalAppSettingsCreated}",
+    "Starting Rostek Gateway {GatewayId}. DataDirectory={DataDirectory}, ConfigDatabasePath={ConfigDatabasePath}, OeeDatabasePath={OeeDatabasePath}, BackupDirectory={BackupDirectory}, ExportDirectory={ExportDirectory}, GatewayHomePath={GatewayHomePath}, ExternalAppSettingsPath={ExternalAppSettingsPath}, ExternalAppSettingsCreated={ExternalAppSettingsCreated}",
     gatewayOptions.GatewayId,
     gatewayOptions.DataDirectory,
+    configDatabasePath,
+    oeeDatabasePath,
     gatewayOptions.BackupDirectory,
     gatewayOptions.ExportDirectory,
     externalAppSettings.GatewayHomePath,
@@ -76,9 +85,34 @@ startupLogger.LogInformation(
 using (var scope = app.Services.CreateScope())
 {
     var initializer = scope.ServiceProvider.GetRequiredService<GatewayDbInitializer>();
-    startupLogger.LogInformation("Initializing configuration database at {DatabasePath}", Path.Combine(gatewayOptions.DataDirectory, "config.db"));
+    startupLogger.LogInformation("Initializing configuration database at {DatabasePath}", configDatabasePath);
     await initializer.InitializeAsync(CancellationToken.None);
     startupLogger.LogInformation("Configuration database initialized");
+
+    var oeeInitializer = scope.ServiceProvider.GetRequiredService<OeeDbInitializer>();
+    startupLogger.LogInformation("Initializing OEE database at {DatabasePath}", oeeDatabasePath);
+    await oeeInitializer.InitializeAsync(CancellationToken.None);
+    startupLogger.LogInformation("OEE database initialized");
+
+    var oeeRepository = scope.ServiceProvider.GetRequiredService<IOeeLocalRepository>();
+    var productionContextCache = scope.ServiceProvider.GetRequiredService<IProductionContextCache>();
+    var productionContexts = await oeeRepository.ListProductionContextsAsync(CancellationToken.None);
+    productionContextCache.Replace(productionContexts);
+    startupLogger.LogInformation("Loaded {ProductionContextCount} production contexts into OEE memory store", productionContexts.Count);
+    foreach (var context in productionContexts.OrderBy(context => context.Machine, StringComparer.OrdinalIgnoreCase).ThenBy(context => context.OrderId, StringComparer.OrdinalIgnoreCase))
+    {
+        startupLogger.LogInformation(
+            "Loaded production context. Machine={Machine}, Status={Status}, OrderId={OrderId}, SessionId={SessionId}, ActivePeriodStartAt={ActivePeriodStartAt}, PlcPeriodIndex={PlcPeriodIndex}, BaselineRawId={BaselineRawId}, BaselineCapturedAt={BaselineCapturedAt}, ProductsJson={ProductsJson}",
+            context.Machine,
+            context.Status,
+            context.OrderId,
+            context.SessionId,
+            context.ActivePeriodStartAt,
+            context.CurrentPlcPeriodIndex,
+            context.BaselineRawId,
+            context.BaselineCapturedAt,
+            context.ProductsJson);
+    }
 
     var versionService = scope.ServiceProvider.GetRequiredService<IConfigurationVersionService>();
     var active = await versionService.GetActiveAsync(CancellationToken.None);
@@ -140,6 +174,43 @@ app.MapGet("/api/v1/machines/{machineCode}/runtime-status", (string machineCode,
 app.MapGet("/api/v1/machines/{machineCode}/values", (string machineCode, IMachineValueReader valueReader) =>
     valueReader.GetSnapshot(machineCode) is { } snapshot ? Results.Ok(snapshot) : Results.NotFound());
 
+app.MapPost("/api/v1/gateway/oee/production-commands", async (ProductionCommandBatchRequest request, IProductionCommandService commandService, CancellationToken cancellationToken) =>
+{
+    if (request.SchemaVersion != 1 || request.Items is not { Count: > 0 })
+    {
+        return Results.BadRequest(new
+        {
+            accepted = false,
+            schema_version = request.SchemaVersion,
+            gateway_id = request.GatewayId,
+            created_at = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            accepted_count = 0,
+            rejected_count = request.Items?.Count ?? 0,
+            items = Array.Empty<object>(),
+            message = "schema_version must be 1 and items is required."
+        });
+    }
+
+    return Results.Ok(await commandService.HandleBatchAsync(request, cancellationToken));
+});
+
+app.MapPost("/api/v1/mes/production-commands", async (ProductionCommandRequest request, IProductionCommandService commandService, CancellationToken cancellationToken) =>
+{
+    var response = await commandService.HandleAsync(request, cancellationToken);
+    return response.Accepted ? Results.Ok(response) : Results.BadRequest(response);
+});
+
+app.MapGet("/api/v1/mes-sync/status", (IRealtimeSnapshotSyncStatusStore statusStore, Microsoft.Extensions.Options.IOptions<MesSyncOptions> options) =>
+{
+    var status = statusStore.Current;
+    return Results.Ok(new MesSyncStatusDto(
+        options.Value.Enabled,
+        status.LastSuccessUnixTimeSeconds,
+        status.LastError,
+        status.LastItemCount,
+        status.DroppedBatchCount));
+});
+
 app.MapPost("/api/v1/configuration/validate", async (ConfigurationBuilderPort builderService, IConfigurationValidator validator, CancellationToken cancellationToken) =>
     Results.Ok(await validator.ValidateAsync(await builderService.BuildDraftAsync(cancellationToken), cancellationToken)));
 
@@ -163,7 +234,7 @@ app.MapGet("/api/v1/configuration/export", async (IConfigurationImportExportServ
 
 app.Run();
 
-static string ResolveGatewayPath(string? configuredPath, string defaultLeaf)
+static string ResolveGatewayPath(string gatewayHomePath, string? configuredPath, string defaultLeaf)
 {
     var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
     if (string.IsNullOrWhiteSpace(home))
@@ -187,7 +258,18 @@ static string ResolveGatewayPath(string? configuredPath, string defaultLeaf)
         return path;
     }
 
-    return Path.Combine(home, ".gateway", path);
+    return Path.Combine(gatewayHomePath, path);
+}
+
+static string SanitizeDatabaseFileName(string? configuredFileName, string defaultFileName)
+{
+    if (string.IsNullOrWhiteSpace(configuredFileName))
+    {
+        return defaultFileName;
+    }
+
+    var fileName = Path.GetFileName(configuredFileName);
+    return string.IsNullOrWhiteSpace(fileName) ? defaultFileName : fileName;
 }
 
 public partial class Program;

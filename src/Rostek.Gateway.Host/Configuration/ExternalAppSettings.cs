@@ -11,6 +11,7 @@ public static class ExternalAppSettings
 {
     private const string GatewayHomeDirectoryName = ".gateway";
     private const string AppSettingsFileName = "appsettings.json";
+    public const string GatewayHomeEnvironmentVariable = "ROSTEK_GATEWAY_HOME";
 
     public static ExternalAppSettingsStatus Ensure(string? userHomePath = null)
     {
@@ -29,6 +30,15 @@ public static class ExternalAppSettings
 
     public static string ResolveGatewayHomePath(string? userHomePath = null)
     {
+        if (string.IsNullOrWhiteSpace(userHomePath))
+        {
+            var configuredGatewayHome = Environment.GetEnvironmentVariable(GatewayHomeEnvironmentVariable);
+            if (!string.IsNullOrWhiteSpace(configuredGatewayHome))
+            {
+                return configuredGatewayHome;
+            }
+        }
+
         var home = string.IsNullOrWhiteSpace(userHomePath)
             ? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
             : userHomePath;
@@ -49,6 +59,8 @@ public static class ExternalAppSettings
             {
                 GatewayId = "GW-M16-01",
                 DataDirectory = "data",
+                ConfigDatabaseFileName = "config.db",
+                OeeDatabaseFileName = "oee.db",
                 BackupDirectory = "backups",
                 ExportDirectory = "exports"
             },
@@ -60,6 +72,17 @@ public static class ExternalAppSettings
                 MaxReconnectBackoffMs = 30000,
                 ShutdownTimeoutSeconds = 30
             },
+            MesSync = new
+            {
+                Enabled = false,
+                BaseUrl = string.Empty,
+                BearerToken = string.Empty,
+                TimeoutSeconds = 30,
+                RetryCount = 3,
+                BatchSize = 100,
+                SyncIntervalMs = 5000,
+                RequireProductionContext = false
+            },
             Kestrel = new
             {
                 Endpoints = new
@@ -69,16 +92,6 @@ public static class ExternalAppSettings
                         Url = "http://0.0.0.0:8080"
                     }
                 }
-            },
-            History = new
-            {
-                Enabled = false,
-                Provider = "Postgres",
-                SampleIntervalMs = 5000,
-                BatchSize = 500,
-                CommandTimeoutSeconds = 10,
-                ConnectionString = string.Empty,
-                RetentionDays = 90
             }
         };
 

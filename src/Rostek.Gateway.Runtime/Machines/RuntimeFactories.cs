@@ -31,7 +31,7 @@ public sealed class OpcUaMachineRuntimeFactory(
 }
 
 public sealed class ProtocolMachineRuntimeFactory(
-    FakeMachineRuntimeFactory fakeFactory,
+    UnsupportedProtocolMachineRuntimeFactory unsupportedProtocolFactory,
     ModbusTcpMachineRuntimeFactory modbusTcpFactory,
     OpcUaMachineRuntimeFactory opcUaFactory) : IMachineRuntimeFactory
 {
@@ -40,7 +40,7 @@ public sealed class ProtocolMachineRuntimeFactory(
             ? modbusTcpFactory.Create(configuration)
             : IsOpcUa(configuration.Protocol)
                 ? opcUaFactory.Create(configuration)
-                : fakeFactory.Create(configuration);
+                : unsupportedProtocolFactory.Create(configuration);
 
     private static bool IsModbusTcp(string protocol) =>
         protocol.Equals("MODBUS_TCP", StringComparison.OrdinalIgnoreCase) ||

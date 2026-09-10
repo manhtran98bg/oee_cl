@@ -96,7 +96,7 @@ public sealed class OpcUaMachineRuntimeTests
             valueStore,
             Options.Create(new RuntimeOptions { MinimumPollingIntervalMs = 10, MaxReconnectBackoffMs = 1000 }),
             NullLogger<ModbusTcpMachineRuntime>.Instance);
-        var protocolFactory = new ProtocolMachineRuntimeFactory(new FakeMachineRuntimeFactory(), modbusFactory, opcUaFactory);
+        var protocolFactory = new ProtocolMachineRuntimeFactory(new UnsupportedProtocolMachineRuntimeFactory(), modbusFactory, opcUaFactory);
 
         var runtime = protocolFactory.Create(CreateMachine(retryCount: 0));
 

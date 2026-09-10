@@ -13,7 +13,7 @@ public static class DependencyInjection
     {
         services.AddSingleton<RuntimeConfigurationProvider>();
         services.AddSingleton<IRuntimeConfigurationProvider>(sp => sp.GetRequiredService<RuntimeConfigurationProvider>());
-        services.AddSingleton<FakeMachineRuntimeFactory>();
+        services.AddSingleton<UnsupportedProtocolMachineRuntimeFactory>();
         services.AddSingleton<ModbusTcpMachineRuntimeFactory>();
         services.AddSingleton<OpcUaMachineRuntimeFactory>();
         services.AddSingleton<IMachineRuntimeFactory, ProtocolMachineRuntimeFactory>();

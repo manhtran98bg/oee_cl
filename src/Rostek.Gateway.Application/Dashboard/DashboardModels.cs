@@ -1,5 +1,10 @@
 namespace Rostek.Gateway.Application.Dashboard;
 
+public interface IDashboardService
+{
+    Task<DashboardDto> GetAsync(CancellationToken cancellationToken);
+}
+
 public sealed record DashboardDto(
     DashboardSummaryDto Summary,
     IReadOnlyList<MachineDashboardRowDto> Machines);
