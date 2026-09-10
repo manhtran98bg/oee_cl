@@ -315,7 +315,9 @@ public sealed class RealtimeSnapshotBuilder(
                 var cycleTimeSeconds = product.EffectiveCycleTime > 0
                     ? product.EffectiveCycleTime
                     : raw.CycleTimeMs > 0 ? raw.CycleTimeMs / 1000m : 0m;
-                var plannedQty = cycleTimeSeconds > 0 ? Decimal.Round(productionTime / cycleTimeSeconds, 6) : 0m;
+                var plannedQty = cycleTimeSeconds > 0
+                    ? Decimal.Floor(productionTime / cycleTimeSeconds) * product.Gain
+                    : 0m;
                 var availability = Percent(runTime, productionTime);
                 var performance = plannedQty > 0 ? Percent(actualQty, plannedQty) : 0m;
                 var quality = actualQty > 0 ? Percent(goodQty, actualQty) : 0m;
