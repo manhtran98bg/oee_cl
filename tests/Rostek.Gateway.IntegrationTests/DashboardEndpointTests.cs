@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Rostek.Gateway.Application.MesSync;
 using Rostek.Gateway.Domain.Entities;
@@ -51,30 +52,37 @@ public sealed class DashboardEndpointTests
             await SeedMachineAsync(factory, "M16-01");
 
             var commandResponse = await client.PostAsJsonAsync(
-                "/api/v1/mes/production-commands",
-                new ProductionCommandRequest
+                "/api/v1/gateway/oee/production-commands",
+                new ProductionCommandBatchRequest
                 {
-                    MachineCode = "M16-01",
-                    MachineName = "Máy đúc M16-01",
-                    CommandCode = "CMD-001",
-                    Action = "start",
-                    OccurredAtUnixTimeSeconds = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                    ProductionOrderCode = "MO-001",
-                    Products =
+                    GatewayId = "GW-M16-01",
+                    CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    Items =
                     [
-                        new ProductionCommandProduct
+                        new ProductionCommandItemRequest
                         {
-                            ProductCode = "SP-001",
-                            ProductName = "Vỏ nhựa A",
-                            MoldCode = "KHUON-001",
-                            Cavity = 4,
-                            CycleTimeSeconds = 12.5m
+                            MachineCode = "M16-01",
+                            CommandCode = "CMD-001",
+                            Action = "start",
+                            OrderId = "MO-001",
+                            Products =
+                            [
+                                new ProductionCommandProduct
+                                {
+                                    ProductCode = "SP-001",
+                                    MoldCode = "KHUON-001",
+                                    Cavity = 4,
+                                    CycleTime = 12.5m
+                                }
+                            ]
                         }
                     ]
                 });
             var statusResponse = await client.GetAsync("/api/v1/mes-sync/status");
 
             Assert.Equal(HttpStatusCode.OK, commandResponse.StatusCode);
+            var commandJson = await commandResponse.Content.ReadAsStringAsync();
+            Assert.Contains("\"accepted_count\":1", commandJson);
             Assert.Equal(HttpStatusCode.OK, statusResponse.StatusCode);
             Assert.Contains("\"enabled\":false", await statusResponse.Content.ReadAsStringAsync());
             await AssertProductionContextSavedToOeeDbAsync(factory, "M16-01");
@@ -109,7 +117,7 @@ public sealed class DashboardEndpointTests
     {
         using var scope = factory.Services.CreateScope();
         var oeeDbContext = scope.ServiceProvider.GetRequiredService<OeeDbContext>();
-        var context = await oeeDbContext.ProductionContexts.FindAsync(machineCode);
+        var context = await oeeDbContext.ProductionContexts.SingleOrDefaultAsync(context => context.Machine == machineCode && context.OrderId == "MO-001");
         Assert.NotNull(context);
         Assert.Equal("active", context.Status);
     }

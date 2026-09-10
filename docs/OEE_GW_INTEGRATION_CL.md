@@ -1,36 +1,37 @@
 # Rostek Gateway Integration Cho MES/OEE CLX4
 
-Tài liệu này mô tả hướng tích hợp hiện tại: Gateway đọc máy, tự chuẩn bị dữ liệu OEE, lưu outbox local bằng SQLite và sync lên MES server qua HTTP.
+Tài liệu này mô tả luồng tích hợp hiện tại giữa Rostek Gateway và MES/OEE CLX4.
 
 ## 1. Mục Đích
 
 Rostek Gateway dùng:
 
-- SQLite để lưu cấu hình local.
-- SQLite để lưu production context và MES sync outbox.
+- SQLite `config.db` để lưu cấu hình local: group, template, machine, signal, version.
+- SQLite `oee.db` để lưu production context và raw PLC interval local.
 - Runtime RAM để giữ latest signal values.
-- SQLite để lưu raw checkpoint `PlcRawIntervals` theo mốc 5 giây.
-- HTTP API để gửi OEE metrics lên MES.
-- Timestamp của production context, raw interval và outbox dùng Unix seconds.
+- HTTP API để nhận production command từ MES và gửi realtime OEE snapshot lên MES.
+- Unix seconds cho các mốc thời gian OEE.
 
-PostgreSQL Gateway không còn là contract chính cho hệ thống OEE bên ngoài đọc trực tiếp.
+PostgreSQL không còn là contract chính cho hệ thống OEE bên ngoài đọc trực tiếp.
 
 ## 2. Luồng Dữ Liệu
 
 ```text
+MES production command
+-> Gateway API
+-> production_context trong oee.db
+-> ProductionContextCache trong RAM
+
 Modbus/OPC UA device
 -> Gateway Runtime
 -> MachineValueStore trong RAM
--> PlcRawIntervals trong SQLite
--> OEE metric builder
--> SQLite MES sync outbox
--> HTTP MES API
+-> plc_raw_interval trong oee.db
+-> Realtime OEE snapshot builder
+-> HTTP MES realtime snapshot API
 -> MES/OEE dashboard
 ```
 
 Runtime chỉ đọc device và cập nhật RAM. Runtime không gọi HTTP và không biết MES server.
-
-`RequireProductionContext=false` là chế độ test: Gateway vẫn build/enqueue metric bằng context tạm `order_id = TEST_ORDER`, `session_id = TEST_SESSION`, `tag = TEST` khi chưa nhận production command từ MES. Khi MES command đã tích hợp thật, đổi thành `true` để chỉ sync metric cho máy có production context.
 
 ## 3. Cấu Hình MES Sync
 
@@ -57,39 +58,53 @@ Section:
 }
 ```
 
-`BearerToken` không commit vào repository. Production có thể override bằng environment variable:
+`RequireProductionContext=false` là chế độ test: Gateway tự tạo context test nếu chưa nhận command thật từ MES. Production nên đổi thành `true`.
+
+Production có thể override bằng environment variable:
 
 ```text
 MesSync__Enabled=true
 MesSync__BaseUrl=http://mes-server:8070
 MesSync__BearerToken=<token>
+MesSync__RequireProductionContext=true
 ```
 
-## 4. Production Command Từ MES Xuống Gateway
+## 4. Production Command MES -> Gateway
 
-MES gọi endpoint:
+Endpoint chính:
 
 ```http
-POST /api/v1/mes/production-commands
+POST /api/v1/gateway/oee/production-commands
 ```
 
-Payload dùng snake_case:
+Payload:
 
 ```json
 {
-  "machine_code": "M16-01",
-  "command_code": "CMD-20260907-001",
-  "action": "start",
-  "occurred_at_unix_seconds": 1788746400,
-  "production_order_code": "MO-001",
-  "session_id": "MO-001-SESSION-001",
-  "operator_code": "OP-01",
-  "reason_code": null,
-  "note": null
+  "schema_version": 1,
+  "gateway_id": "GW-M16-01",
+  "created_at": 1788750000,
+  "items": [
+    {
+      "command_code": "CMD-20260909-0001",
+      "machine_code": "M16-01",
+      "action": "start",
+      "order_id": "LSX-001",
+      "products": [
+        {
+          "product_code": "SP-001",
+          "mold_code": "KHUON-001",
+          "cavity": 4,
+          "cycle_time": 16.0,
+          "target_qty": 10000
+        }
+      ]
+    }
+  ]
 }
 ```
 
-`action` hỗ trợ V1:
+`action` hỗ trợ:
 
 ```text
 start
@@ -97,11 +112,9 @@ pause
 stop
 ```
 
-Gateway lưu trạng thái này vào SQLite `ProductionContexts`. Dữ liệu này dùng để đóng gói metric theo máy/lệnh sản xuất/lượt sản xuất.
+Gateway tự sinh `session_id` khi nhận `start`. Một máy có thể có nhiều order active cùng lúc, nhưng không có hai active sessions cùng `machine_code + order_id`.
 
-`session_id` là mã của một lượt sản xuất. Một `production_order_code` có thể có nhiều `session_id` khác nhau nếu cùng lệnh sản xuất được chạy nhiều lượt.
-
-Nếu không gửi `occurred_at_unix_seconds`, Gateway tự dùng thời điểm hiện tại theo Unix seconds.
+`production_context` chỉ lưu các session hiện hành `active` hoặc `pause`. Khi MES gửi `stop`, Gateway đóng dòng history trong `production_period`, sau đó xoá session đó khỏi `production_context`.
 
 ## 5. Signal Code Cần Cấu Hình
 
@@ -117,85 +130,46 @@ Gateway map signal theo `SignalCode`, không phân biệt hoa thường:
 | `STOP_TIME_TOTAL` | Stop time tích lũy, đơn vị giây |
 | `ERROR_TIME_TOTAL` | Error time tích lũy, đơn vị giây |
 
-Gateway lưu raw interval vào SQLite rồi tính delta từ raw trước đó trong cùng production context:
+Gateway lưu raw interval theo mốc cấu hình, mặc định 5 giây. Realtime snapshot tính từ baseline được lưu trong `production_context` của từng `session_id`.
 
-```text
-same machine_code
-same production_order_code
-same session_id
-```
+## 6. Realtime Snapshot Gateway -> MES
 
-Sau khi app restart, nếu còn raw interval trước đó trong SQLite cùng `machine_code/order_id/session_id`, gateway vẫn có thể tính tiếp metric.
-
-## 6. HTTP Sync Lên MES
-
-V1 sync endpoint:
+Endpoint MES cần mở:
 
 ```http
-POST /secondly-production/sync
+POST /api/v1/gateway/oee/realtime-snapshots
 ```
 
-Header:
-
-```http
-Authorization: Bearer <token>
-Content-Type: application/json
-Accept: application/json
-```
-
-Body:
+Payload:
 
 ```json
 {
-  "data": [
+  "schema_version": 1,
+  "gateway_id": "GW-M16-01",
+  "created_at": 1788750000,
+  "items": [
     {
-      "mode": "Started",
-      "machine": "M16-01",
-      "version": "1",
-      "order_id": "MO-001",
-      "session_id": "MO-001-SESSION-001",
-      "tag": "CMD-20260907-001",
-      "total": 10,
-      "ng_qty": 1,
-      "run_time": 5,
-      "error_time": 0,
-      "stop_time": 0,
-      "prod_time": 5,
-      "A": 1,
-      "P": 1,
-      "Q": 0.9,
-      "cycle": 0.5,
-      "OEE": 0.9,
-      "product_id": null,
-      "start_at": 1788746400,
-      "end_at": 1788746405,
-      "updated_at": 1788746405
+      "machine_code": "M16-01",
+      "order_id": "LSX-001",
+      "session_id": "M16-01-LSX-001-1788750000",
+      "product_code": "SP-001",
+      "mold_code": "KHUON-001",
+      "machine_state": "run",
+      "actual_qty": 125,
+      "planned_qty": 144,
+      "availability": 83.333333,
+      "performance": 86.805556,
+      "quality": 96,
+      "oee": 69.444445,
+      "extra": {}
     }
   ]
 }
 ```
 
-`A/P/Q/OEE` hiện là khung V1 và có thể thay đổi khi chốt công thức OEE chính thức.
+Mỗi item là snapshot realtime cho một session/order đang active hoặc pause.
 
-Các field thời gian trong payload sync (`start_at`, `end_at`, `updated_at`) là Unix seconds.
-
-## 7. Outbox Và Retry
-
-Gateway luôn enqueue payload vào SQLite trước.
-
-Nếu MES server lỗi hoặc mất mạng:
-
-- message vẫn nằm trong outbox;
-- Gateway retry theo `MesSync.RetryCount`;
-- lỗi không làm sập runtime đọc máy.
-
-Diagnostic:
-
-```http
-GET /api/v1/mes-sync/status
-```
-
-## 8. API Master Data Máy Từ MES CL
+## 7. API Master Data Máy Từ MES CL
 
 MES CL cần cung cấp API readonly để Gateway hoặc OEE dashboard lấy master data máy đúc:
 
@@ -219,14 +193,5 @@ Response đề xuất:
   ]
 }
 ```
-
-| Field | Required | Ý nghĩa |
-|---|---:|---|
-| `code` | Yes | Mã số quản lý thiết bị |
-| `name` | Yes | Tên thiết bị |
-| `model` | No | Model máy |
-| `serial` | No | Số sê-ri |
-| `manufacturer` | No | Nhà cung cấp |
-| `location` | No | Vị trí lắp đặt |
 
 `code` nên trùng với `machine_code` Gateway đang cấu hình.

@@ -9,16 +9,38 @@ public sealed class InMemoryOeeLocalRepository : IOeeLocalRepository
     public List<ProductionPeriod> Periods { get; } = [];
     public List<PlcRawInterval> RawIntervals { get; } = [];
 
-    public Task<ProductionContext?> GetProductionContextAsync(string machine, CancellationToken cancellationToken) =>
-        Task.FromResult(Contexts.FirstOrDefault(context => context.Machine.Equals(machine, StringComparison.OrdinalIgnoreCase)));
+    public Task<ProductionContext?> GetProductionContextAsync(string sessionId, CancellationToken cancellationToken) =>
+        Task.FromResult(Contexts.FirstOrDefault(context => context.SessionId.Equals(sessionId, StringComparison.OrdinalIgnoreCase)));
 
-    public Task<IReadOnlyDictionary<string, ProductionContext>> ListProductionContextsAsync(CancellationToken cancellationToken) =>
-        Task.FromResult<IReadOnlyDictionary<string, ProductionContext>>(Contexts
-            .ToDictionary(context => context.Machine, StringComparer.OrdinalIgnoreCase));
+    public Task<ProductionContext?> GetActiveProductionContextAsync(string machine, string orderId, CancellationToken cancellationToken) =>
+        Task.FromResult(Contexts
+            .Where(context =>
+                context.Machine.Equals(machine, StringComparison.OrdinalIgnoreCase) &&
+                context.OrderId.Equals(orderId, StringComparison.OrdinalIgnoreCase) &&
+                context.Status is "active" or "pause")
+            .OrderByDescending(context => context.ActivePeriodStartAt)
+            .FirstOrDefault());
+
+    public Task<IReadOnlyList<ProductionContext>> ListProductionContextsAsync(CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<ProductionContext>>(Contexts
+            .Where(context => context.Status is "active" or "pause")
+            .OrderBy(context => context.Machine, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(context => context.OrderId, StringComparer.OrdinalIgnoreCase)
+            .ToList());
+
+    public Task<IReadOnlyList<ProductionContext>> ListCapturableProductionContextsAsync(string machine, CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<ProductionContext>>(Contexts
+            .Where(context => context.Machine.Equals(machine, StringComparison.OrdinalIgnoreCase) && context.Status is "active" or "pause")
+            .OrderBy(context => context.OrderId, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(context => context.SessionId, StringComparer.OrdinalIgnoreCase)
+            .ToList());
 
     public Task<ProductionContext> EnsureTestProductionContextAsync(string machine, long startAt, CancellationToken cancellationToken)
     {
-        var context = Contexts.FirstOrDefault(item => item.Machine.Equals(machine, StringComparison.OrdinalIgnoreCase));
+        var context = Contexts.FirstOrDefault(item =>
+            item.Machine.Equals(machine, StringComparison.OrdinalIgnoreCase) &&
+            item.OrderId == OeeTestProductionContext.OrderId &&
+            item.Status is "active" or "pause");
         if (context is not null)
         {
             return Task.FromResult(context);
@@ -26,11 +48,11 @@ public sealed class InMemoryOeeLocalRepository : IOeeLocalRepository
 
         context = new ProductionContext
         {
+            SessionId = $"{machine}-{OeeTestProductionContext.PeriodId}",
             Machine = machine,
             Status = "active",
-            OrderCode = OeeTestProductionContext.OrderCode,
+            OrderId = OeeTestProductionContext.OrderId,
             ServerOrderId = OeeTestProductionContext.ServerOrderId,
-            ActivePeriodId = $"{machine}-{OeeTestProductionContext.PeriodId}",
             ActivePeriodStartAt = startAt,
             CurrentPlcPeriodIndex = OeeTestProductionContext.PlcPeriodIndex,
             ProductsJson = OeeTestProductionContext.ProductsJson,
@@ -43,8 +65,14 @@ public sealed class InMemoryOeeLocalRepository : IOeeLocalRepository
 
     public Task SaveProductionContextAsync(ProductionContext context, CancellationToken cancellationToken)
     {
-        Contexts.RemoveAll(item => item.Machine.Equals(context.Machine, StringComparison.OrdinalIgnoreCase));
+        Contexts.RemoveAll(item => item.SessionId.Equals(context.SessionId, StringComparison.OrdinalIgnoreCase));
         Contexts.Add(context);
+        return Task.CompletedTask;
+    }
+
+    public Task DeleteProductionContextAsync(string sessionId, CancellationToken cancellationToken)
+    {
+        Contexts.RemoveAll(item => item.SessionId.Equals(sessionId, StringComparison.OrdinalIgnoreCase));
         return Task.CompletedTask;
     }
 
@@ -53,7 +81,7 @@ public sealed class InMemoryOeeLocalRepository : IOeeLocalRepository
 
     public Task<ProductionPeriod> EnsureProductionPeriodAsync(ProductionContext context, long startAt, CancellationToken cancellationToken)
     {
-        var period = Periods.FirstOrDefault(item => item.PeriodId == context.ActivePeriodId);
+        var period = Periods.FirstOrDefault(item => item.PeriodId == context.SessionId);
         if (period is not null)
         {
             return Task.FromResult(period);
@@ -61,10 +89,10 @@ public sealed class InMemoryOeeLocalRepository : IOeeLocalRepository
 
         period = new ProductionPeriod
         {
-            PeriodId = context.ActivePeriodId,
+            PeriodId = context.SessionId,
             Machine = context.Machine,
             PlcPeriodIndex = context.CurrentPlcPeriodIndex,
-            OrderCode = context.OrderCode,
+            OrderId = context.OrderId,
             ServerOrderId = context.ServerOrderId,
             ProductsJson = context.ProductsJson,
             ExtraJson = context.ExtraJson,
@@ -77,10 +105,10 @@ public sealed class InMemoryOeeLocalRepository : IOeeLocalRepository
         return Task.FromResult(period);
     }
 
-    public Task<int> GetNextPlcPeriodIndexAsync(string machine, string orderCode, CancellationToken cancellationToken)
+    public Task<int> GetNextPlcPeriodIndexAsync(string machine, string orderId, CancellationToken cancellationToken)
     {
         var currentMax = Periods
-            .Where(period => period.Machine.Equals(machine, StringComparison.OrdinalIgnoreCase) && period.OrderCode == orderCode)
+            .Where(period => period.Machine.Equals(machine, StringComparison.OrdinalIgnoreCase) && period.OrderId.Equals(orderId, StringComparison.OrdinalIgnoreCase))
             .Select(period => (int?)period.PlcPeriodIndex)
             .DefaultIfEmpty()
             .Max();

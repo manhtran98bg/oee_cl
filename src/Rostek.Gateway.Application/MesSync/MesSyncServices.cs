@@ -1,5 +1,5 @@
 using System.Text.Json;
-using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Rostek.Gateway.Application.Oee;
@@ -14,144 +14,188 @@ public sealed class ProductionCommandService(
     IConfigRepository configRepository,
     ILogger<ProductionCommandService> logger) : IProductionCommandService
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+    };
+
+    public async Task<ProductionCommandBatchResponse> HandleBatchAsync(ProductionCommandBatchRequest request, CancellationToken cancellationToken)
+    {
+        var now = request.CreatedAt > 0 ? request.CreatedAt : DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var items = new List<ProductionCommandResponse>();
+        foreach (var item in request.Items ?? [])
+        {
+            items.Add(await HandleItemAsync(item, now, cancellationToken));
+        }
+
+        var acceptedCount = items.Count(item => item.Accepted);
+        var response = new ProductionCommandBatchResponse(
+            Accepted: acceptedCount == items.Count,
+            SchemaVersion: request.SchemaVersion,
+            GatewayId: request.GatewayId,
+            CreatedAt: DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            AcceptedCount: acceptedCount,
+            RejectedCount: items.Count - acceptedCount,
+            Items: items);
+
+        logger.LogInformation(
+            "Production command batch handled. GatewayId={GatewayId}, CreatedAt={CreatedAt}, Items={ItemCount}, Accepted={AcceptedCount}, Rejected={RejectedCount}",
+            request.GatewayId,
+            now,
+            items.Count,
+            response.AcceptedCount,
+            response.RejectedCount);
+        return response;
+    }
 
     public async Task<ProductionCommandResponse> HandleAsync(ProductionCommandRequest request, CancellationToken cancellationToken)
     {
+        var item = new ProductionCommandItemRequest
+        {
+            CommandCode = request.CommandCode,
+            MachineCode = request.MachineCode,
+            Action = request.Action,
+            OrderId = request.ProductionOrderCode,
+            Products = request.Products
+        };
+        var now = request.OccurredAtUnixTimeSeconds ?? DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        return await HandleItemAsync(item, now, cancellationToken);
+    }
+
+    private async Task<ProductionCommandResponse> HandleItemAsync(
+        ProductionCommandItemRequest request,
+        long now,
+        CancellationToken cancellationToken)
+    {
         if (string.IsNullOrWhiteSpace(request.MachineCode))
         {
-            return Reject(string.Empty, request.CommandCode, request.ProductionOrderCode, null, "machine_code is required.");
+            return Reject(string.Empty, request.CommandCode, request.OrderId, null, "machine_code is required.");
         }
 
         if (string.IsNullOrWhiteSpace(request.CommandCode))
         {
-            return Reject(request.MachineCode, string.Empty, request.ProductionOrderCode, null, "command_code is required.");
+            return Reject(request.MachineCode, string.Empty, request.OrderId, null, "command_code is required.");
         }
 
         if (string.IsNullOrWhiteSpace(request.Action) || !ProductionCommandActions.TryMapStatus(request.Action, out var status))
         {
-            return Reject(request.MachineCode, request.CommandCode, request.ProductionOrderCode, null, "action must be start, pause, or stop.");
+            return Reject(request.MachineCode, request.CommandCode, request.OrderId, null, "action must be start, pause, or stop.");
         }
 
-        var now = request.OccurredAtUnixTimeSeconds ?? DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var machine = request.MachineCode.Trim();
         if (await configRepository.GetMachineByCodeAsync(machine, includeDetails: false, cancellationToken) is null)
         {
-            return Reject(machine, request.CommandCode, request.ProductionOrderCode, null, $"machine_code '{machine}' was not found in Gateway configuration.");
+            return Reject(machine, request.CommandCode, request.OrderId, null, $"machine_code '{machine}' was not found in Gateway configuration.");
         }
 
-        var context = await repository.GetProductionContextAsync(machine, cancellationToken);
+        var orderId = Normalize(request.OrderId);
+        if (orderId is null)
+        {
+            return Reject(machine, request.CommandCode, request.OrderId, null, "order_id is required.");
+        }
+
         var response = status switch
         {
-            "active" => await StartAsync(request, context, machine, now, cancellationToken),
-            "pause" => await PauseAsync(request, context, machine, now, cancellationToken),
-            "stopped" => await StopAsync(request, context, machine, now, cancellationToken),
-            _ => Reject(machine, request.CommandCode, request.ProductionOrderCode, null, "action must be start, pause, or stop.")
+            "active" => await StartAsync(request, machine, orderId, now, cancellationToken),
+            "pause" => await PauseAsync(request, machine, orderId, now, cancellationToken),
+            "stopped" => await StopAsync(request, machine, orderId, now, cancellationToken),
+            _ => Reject(machine, request.CommandCode, orderId, null, "action must be start, pause, or stop.")
         };
 
-        if (response.Accepted)
-        {
-            logger.LogInformation(
-                "Production command accepted. Machine={Machine}, CommandCode={CommandCode}, Status={Status}, Order={Order}, Session={Session}",
-                response.MachineCode,
-                response.CommandCode,
-                response.Status,
-                response.ProductionOrderCode,
-                response.SessionId);
-        }
-
+        logger.LogInformation(
+            "Production command item handled. CommandCode={CommandCode}, Machine={Machine}, OrderId={OrderId}, Accepted={Accepted}, Status={Status}, Session={Session}, Message={Message}",
+            response.CommandCode,
+            response.MachineCode,
+            response.OrderId,
+            response.Accepted,
+            response.Status,
+            response.SessionId,
+            response.Message);
         return response;
     }
 
     private async Task<ProductionCommandResponse> StartAsync(
-        ProductionCommandRequest request,
-        ProductionContext? currentContext,
+        ProductionCommandItemRequest request,
         string machine,
+        string orderId,
         long now,
         CancellationToken cancellationToken)
     {
-        var orderCode = Normalize(request.ProductionOrderCode);
-        if (orderCode is null)
-        {
-            return Reject(machine, request.CommandCode, request.ProductionOrderCode, null, "production_order_code is required when action is start.");
-        }
-
         var productValidation = ValidateProducts(request.Products);
         if (productValidation is not null)
         {
-            return Reject(machine, request.CommandCode, orderCode, null, productValidation);
+            return Reject(machine, request.CommandCode, orderId, null, productValidation);
         }
 
-        var periodId = BuildSessionId(machine, orderCode, now);
-        if (currentContext is not null &&
-            currentContext.ActivePeriodId.Length > 0 &&
-            !currentContext.ActivePeriodId.Equals(periodId, StringComparison.Ordinal) &&
-            currentContext.Status is "active" or "pause")
+        var context = await repository.GetActiveProductionContextAsync(machine, orderId, cancellationToken);
+        var isNewSession = context is null;
+        if (context is null)
         {
-            await repository.CloseProductionPeriodAsync(currentContext.ActivePeriodId, now, "stopped", cancellationToken);
+            var sessionId = BuildSessionId(machine, orderId, now);
+            var plcPeriodIndex = await repository.GetNextPlcPeriodIndexAsync(machine, orderId, cancellationToken);
+            context = new ProductionContext
+            {
+                SessionId = sessionId,
+                Machine = machine,
+                ServerOrderId = orderId,
+                ActivePeriodStartAt = now,
+                CurrentPlcPeriodIndex = plcPeriodIndex
+            };
         }
-
-        var existingPeriod = await repository.GetProductionPeriodAsync(periodId, cancellationToken);
-        var plcPeriodIndex = existingPeriod?.PlcPeriodIndex ?? await repository.GetNextPlcPeriodIndexAsync(machine, orderCode, cancellationToken);
-        var context = currentContext ?? new ProductionContext { Machine = machine };
 
         context.Status = "active";
-        context.OrderCode = orderCode;
-        context.ServerOrderId = orderCode;
-        context.ActivePeriodId = periodId;
-        context.ActivePeriodStartAt = now;
-        context.CurrentPlcPeriodIndex = plcPeriodIndex;
+        context.OrderId = orderId;
         context.ProductsJson = JsonSerializer.Serialize(ToOeeProducts(request.Products!), JsonOptions);
-        context.ExtraJson = BuildExtraJson(request);
-        ClearBaseline(context);
+        context.ExtraJson = "{}";
+        if (isNewSession)
+        {
+            ClearBaseline(context);
+        }
+
         context.UpdatedAt = now;
-
         await repository.SaveProductionContextAsync(context, cancellationToken);
-        await repository.EnsureProductionPeriodAsync(context, now, cancellationToken);
+        await repository.EnsureProductionPeriodAsync(context, context.ActivePeriodStartAt, cancellationToken);
         productionContextCache.Upsert(context);
-
-        return new ProductionCommandResponse(true, context.Machine, request.CommandCode.Trim(), context.Status, context.OrderCode, context.ActivePeriodId, "Accepted");
+        return new ProductionCommandResponse(true, context.Machine, request.CommandCode.Trim(), context.Status, context.OrderId, context.SessionId, "Accepted");
     }
 
     private async Task<ProductionCommandResponse> PauseAsync(
-        ProductionCommandRequest request,
-        ProductionContext? context,
+        ProductionCommandItemRequest request,
         string machine,
+        string orderId,
         long now,
         CancellationToken cancellationToken)
     {
-        if (context is null || context.ActivePeriodId.Length == 0)
+        var context = await repository.GetActiveProductionContextAsync(machine, orderId, cancellationToken);
+        if (context is null)
         {
-            return Reject(machine, request.CommandCode, request.ProductionOrderCode, null, "production context was not found for machine.");
+            return Reject(machine, request.CommandCode, orderId, null, "active production context was not found for machine/order.");
         }
 
         context.Status = "pause";
         context.UpdatedAt = now;
-        context.ExtraJson = MergeExtraJson(context.ExtraJson, request);
         await repository.SaveProductionContextAsync(context, cancellationToken);
         productionContextCache.Upsert(context);
-        return new ProductionCommandResponse(true, context.Machine, request.CommandCode.Trim(), context.Status, context.OrderCode, context.ActivePeriodId, "Accepted");
+        return new ProductionCommandResponse(true, context.Machine, request.CommandCode.Trim(), context.Status, context.OrderId, context.SessionId, "Accepted");
     }
 
     private async Task<ProductionCommandResponse> StopAsync(
-        ProductionCommandRequest request,
-        ProductionContext? context,
+        ProductionCommandItemRequest request,
         string machine,
+        string orderId,
         long now,
         CancellationToken cancellationToken)
     {
-        if (context is null || context.ActivePeriodId.Length == 0)
+        var context = await repository.GetActiveProductionContextAsync(machine, orderId, cancellationToken);
+        if (context is null)
         {
-            return Reject(machine, request.CommandCode, request.ProductionOrderCode, null, "production context was not found for machine.");
+            return Reject(machine, request.CommandCode, orderId, null, "active production context was not found for machine/order.");
         }
 
-        context.Status = "stopped";
-        context.UpdatedAt = now;
-        context.ExtraJson = MergeExtraJson(context.ExtraJson, request);
-        await repository.SaveProductionContextAsync(context, cancellationToken);
-        await repository.CloseProductionPeriodAsync(context.ActivePeriodId, now, "stopped", cancellationToken);
-        productionContextCache.Upsert(context);
-        return new ProductionCommandResponse(true, context.Machine, request.CommandCode.Trim(), context.Status, context.OrderCode, context.ActivePeriodId, "Accepted");
+        await repository.CloseProductionPeriodAsync(context.SessionId, now, "stopped", cancellationToken);
+        await repository.DeleteProductionContextAsync(context.SessionId, cancellationToken);
+        productionContextCache.Remove(context.SessionId);
+        return new ProductionCommandResponse(true, context.Machine, request.CommandCode.Trim(), "stopped", context.OrderId, context.SessionId, "Accepted");
     }
 
     private static void ClearBaseline(ProductionContext context)
@@ -166,8 +210,8 @@ public sealed class ProductionCommandService(
         context.BaselineCycleTimeMs = 0;
     }
 
-    private static ProductionCommandResponse Reject(string machine, string? commandCode, string? orderCode, string? sessionId, string message) =>
-        new(false, machine, Normalize(commandCode) ?? string.Empty, null, Normalize(orderCode), sessionId, message);
+    private static ProductionCommandResponse Reject(string machine, string? commandCode, string? orderId, string? sessionId, string message) =>
+        new(false, machine, Normalize(commandCode) ?? string.Empty, null, Normalize(orderId), sessionId, message);
 
     private static string? Normalize(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
@@ -191,9 +235,9 @@ public sealed class ProductionCommandService(
                 return "products[].cavity must be greater than 0.";
             }
 
-            if (product.CycleTimeSeconds <= 0)
+            if (product.CycleTime <= 0)
             {
-                return "products[].cycle_time_seconds must be greater than 0.";
+                return "products[].cycle_time must be greater than 0.";
             }
         }
 
@@ -204,68 +248,19 @@ public sealed class ProductionCommandService(
         products.Select(product => new OeeProductDefinition
         {
             ProductId = product.ProductCode.Trim(),
-            ProductName = Normalize(product.ProductName),
             MoldCode = Normalize(product.MoldCode),
             Gain = product.Cavity,
-            CycleTime = product.CycleTimeSeconds,
-            Target = product.TargetQty,
-            Extra = product.Extra
+            CycleTime = product.CycleTime,
+            Target = product.TargetQty
         }).ToList();
 
-    private static string BuildSessionId(string machine, string orderCode, long occurredAt) =>
-        $"{Slug(machine)}-{Slug(orderCode)}-{occurredAt}";
+    private static string BuildSessionId(string machine, string orderId, long occurredAt) =>
+        $"{Slug(machine)}-{Slug(orderId)}-{occurredAt}";
 
     private static string Slug(string value)
     {
         var chars = value.Trim().Select(character => char.IsLetterOrDigit(character) || character is '-' or '_' ? character : '_').ToArray();
         return new string(chars);
-    }
-
-    private static string MergeExtraJson(string existingExtraJson, ProductionCommandRequest request)
-    {
-        var extra = TryParseObject(existingExtraJson);
-        ApplyRequestExtra(extra, request);
-        return extra.ToJsonString(JsonOptions);
-    }
-
-    private static string BuildExtraJson(ProductionCommandRequest request)
-    {
-        var extra = TryParseObject(request.Extra);
-        ApplyRequestExtra(extra, request);
-        return extra.ToJsonString(JsonOptions);
-    }
-
-    private static JsonObject TryParseObject(JsonElement? element)
-    {
-        if (element is { ValueKind: JsonValueKind.Object } value)
-        {
-            return JsonNode.Parse(value.GetRawText()) as JsonObject ?? [];
-        }
-
-        return [];
-    }
-
-    private static JsonObject TryParseObject(string json)
-    {
-        try
-        {
-            return JsonNode.Parse(json) as JsonObject ?? [];
-        }
-        catch (JsonException)
-        {
-            return [];
-        }
-    }
-
-    private static void ApplyRequestExtra(JsonObject extra, ProductionCommandRequest request)
-    {
-        if (!string.IsNullOrWhiteSpace(request.MachineName))
-        {
-            extra["machine_name"] = request.MachineName.Trim();
-        }
-
-        extra["schema_version"] = request.SchemaVersion;
-        extra["last_command_code"] = request.CommandCode.Trim();
     }
 }
 
@@ -287,88 +282,75 @@ public sealed class RealtimeSnapshotBuilder(
 
         foreach (var raw in rawIntervals.OrderBy(item => item.Machine, StringComparer.OrdinalIgnoreCase))
         {
-            var context = productionContextCache.Get(raw.Machine) ?? await repository.GetProductionContextAsync(raw.Machine, cancellationToken);
-            if (context is null || context.ActivePeriodId.Length == 0 || context.Status.Equals("stopped", StringComparison.OrdinalIgnoreCase))
+            var contexts = productionContextCache.GetCapturableByMachine(raw.Machine);
+            if (contexts.Count == 0)
             {
-                skipped++;
-                continue;
+                contexts = await repository.ListCapturableProductionContextsAsync(raw.Machine, cancellationToken);
             }
 
-            if (context.BaselineCapturedAt <= 0)
+            foreach (var context in contexts)
             {
-                SeedBaseline(context, raw, createdAt);
-                await repository.SaveProductionContextAsync(context, cancellationToken);
-                productionContextCache.Upsert(context);
+                if (context.BaselineCapturedAt <= 0)
+                {
+                    SeedBaseline(context, raw, createdAt);
+                    await repository.SaveProductionContextAsync(context, cancellationToken);
+                    productionContextCache.Upsert(context);
+                    logger.LogInformation(
+                        "Seeded realtime OEE baseline. Machine={Machine}, OrderId={OrderId}, SessionId={SessionId}, RawId={RawId}, CapturedAt={CapturedAt}",
+                        context.Machine,
+                        context.OrderId,
+                        context.SessionId,
+                        raw.Id,
+                        raw.ReadAt);
+                    skipped++;
+                    continue;
+                }
+
+                var product = ReadPrimaryProduct(context.ProductsJson);
+                var goodQty = DeltaOrZero(raw.ShotOkTotal, context.BaselineShotOkTotal, raw.Machine, OeeSignalCodes.ShotOkCount);
+                var ngQty = DeltaOrZero(raw.ShotNgTotal, context.BaselineShotNgTotal, raw.Machine, OeeSignalCodes.ShotNgCount);
+                var runTime = DeltaOrZero(raw.RunTimeTotalSec, context.BaselineRunTimeTotalSec, raw.Machine, OeeSignalCodes.RunTimeTotal);
+                var productionTime = Math.Max(0, createdAt - context.ActivePeriodStartAt);
+                var actualQty = goodQty + ngQty;
+                var cycleTimeSeconds = product.EffectiveCycleTime > 0
+                    ? product.EffectiveCycleTime
+                    : raw.CycleTimeMs > 0 ? raw.CycleTimeMs / 1000m : 0m;
+                var plannedQty = cycleTimeSeconds > 0 ? Decimal.Round(productionTime / cycleTimeSeconds, 6) : 0m;
+                var availability = Percent(runTime, productionTime);
+                var performance = plannedQty > 0 ? Percent(actualQty, plannedQty) : 0m;
+                var quality = actualQty > 0 ? Percent(goodQty, actualQty) : 0m;
+                var oee = Decimal.Round(availability * performance * quality / 10000m, 6);
+
+                var item = new RealtimeSnapshotItemPayload(
+                    MachineCode: raw.Machine,
+                    OrderId: context.OrderId,
+                    SessionId: context.SessionId,
+                    ProductCode: product.ProductId,
+                    MoldCode: product.MoldCode,
+                    MachineState: raw.RunState,
+                    ActualQty: actualQty,
+                    PlannedQty: plannedQty,
+                    Availability: availability,
+                    Performance: performance,
+                    Quality: quality,
+                    Oee: oee,
+                    Extra: EmptyExtra());
+                items.Add(item);
+
                 logger.LogInformation(
-                    "Seeded realtime OEE baseline. Machine={Machine}, Order={Order}, Session={Session}, RawId={RawId}, CapturedAt={CapturedAt}",
-                    context.Machine,
-                    context.OrderCode,
-                    context.ActivePeriodId,
-                    raw.Id,
-                    raw.ReadAt);
-                skipped++;
-                continue;
+                    "Realtime OEE snapshot calculated. Machine={Machine}, OrderId={OrderId}, SessionId={SessionId}, Product={Product}, State={State}, ActualQty={ActualQty}, PlannedQty={PlannedQty}, A={Availability}, P={Performance}, Q={Quality}, OEE={Oee}",
+                    item.MachineCode,
+                    item.OrderId,
+                    item.SessionId,
+                    item.ProductCode,
+                    item.MachineState,
+                    item.ActualQty,
+                    item.PlannedQty,
+                    item.Availability,
+                    item.Performance,
+                    item.Quality,
+                    item.Oee);
             }
-
-            var product = ReadPrimaryProduct(context.ProductsJson);
-            var goodQty = DeltaOrZero(raw.ShotOkTotal, context.BaselineShotOkTotal, raw.Machine, OeeSignalCodes.ShotOkCount);
-            var ngQty = DeltaOrZero(raw.ShotNgTotal, context.BaselineShotNgTotal, raw.Machine, OeeSignalCodes.ShotNgCount);
-            var runTime = DeltaOrZero(raw.RunTimeTotalSec, context.BaselineRunTimeTotalSec, raw.Machine, OeeSignalCodes.RunTimeTotal);
-            var stopTime = DeltaOrZero(raw.StopTimeTotalSec, context.BaselineStopTimeTotalSec, raw.Machine, OeeSignalCodes.StopTimeTotal);
-            var errorTime = DeltaOrZero(raw.ErrorTimeTotalSec, context.BaselineErrorTimeTotalSec, raw.Machine, OeeSignalCodes.ErrorTimeTotal);
-            var productionTime = Math.Max(0, createdAt - context.ActivePeriodStartAt);
-            var actualQty = goodQty + ngQty;
-            var cycleTimeSeconds = product.EffectiveCycleTime > 0
-                ? product.EffectiveCycleTime
-                : raw.CycleTimeMs > 0 ? raw.CycleTimeMs / 1000m : 0m;
-            var plannedQty = cycleTimeSeconds > 0 ? Decimal.Round(productionTime / cycleTimeSeconds, 6) : 0m;
-            var availability = Percent(runTime, productionTime);
-            var performance = plannedQty > 0 ? Percent(actualQty, plannedQty) : 0m;
-            var quality = actualQty > 0 ? Percent(goodQty, actualQty) : 0m;
-            var oee = Decimal.Round(availability * performance * quality / 10000m, 6);
-
-            var item = new RealtimeSnapshotItemPayload(
-                Key: Guid.NewGuid().ToString("N"),
-                MachineCode: raw.Machine,
-                OrderCode: context.OrderCode,
-                SessionId: context.ActivePeriodId,
-                ProductCode: product.ProductId,
-                MoldCode: product.MoldCode,
-                MachineState: raw.RunState,
-                GoodQty: goodQty,
-                NgQty: ngQty,
-                ActualQty: actualQty,
-                PlannedQty: plannedQty,
-                RunTime: runTime,
-                StopTime: stopTime,
-                ErrorTime: errorTime,
-                ProductionTime: productionTime,
-                Availability: availability,
-                Performance: performance,
-                Quality: quality,
-                Oee: oee,
-                Extra: EmptyExtra());
-            items.Add(item);
-
-            logger.LogInformation(
-                "Realtime OEE snapshot calculated. Machine={Machine}, Order={Order}, Session={Session}, Product={Product}, State={State}, GoodQty={GoodQty}, NgQty={NgQty}, ActualQty={ActualQty}, PlannedQty={PlannedQty}, RunTime={RunTime}, StopTime={StopTime}, ErrorTime={ErrorTime}, ProductionTime={ProductionTime}, A={Availability}, P={Performance}, Q={Quality}, OEE={Oee}",
-                item.MachineCode,
-                item.OrderCode,
-                item.SessionId,
-                item.ProductCode,
-                item.MachineState,
-                item.GoodQty,
-                item.NgQty,
-                item.ActualQty,
-                item.PlannedQty,
-                item.RunTime,
-                item.StopTime,
-                item.ErrorTime,
-                item.ProductionTime,
-                item.Availability,
-                item.Performance,
-                item.Quality,
-                item.Oee);
         }
 
         return new RealtimeSnapshotBuildResult(
@@ -377,7 +359,7 @@ public sealed class RealtimeSnapshotBuilder(
             skipped);
     }
 
-    private void SeedBaseline(ProductionContext context, PlcRawInterval raw, long updatedAt)
+    private static void SeedBaseline(ProductionContext context, PlcRawInterval raw, long updatedAt)
     {
         context.BaselineRawId = raw.Id;
         context.BaselineCapturedAt = raw.ReadAt;

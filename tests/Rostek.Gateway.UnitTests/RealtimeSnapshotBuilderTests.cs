@@ -48,22 +48,51 @@ public sealed class RealtimeSnapshotBuilderTests
 
         var item = Assert.Single(result.Payload.Items);
         Assert.Equal("M16-01", item.MachineCode);
-        Assert.Equal("TEST_ORDER", item.OrderCode);
+        Assert.Equal("TEST_ORDER", item.OrderId);
         Assert.Equal("M16-01-TEST_SESSION", item.SessionId);
         Assert.Equal("SP-001", item.ProductCode);
         Assert.Equal("KHUON-001", item.MoldCode);
-        Assert.Equal(20, item.GoodQty);
-        Assert.Equal(3, item.NgQty);
         Assert.Equal(23, item.ActualQty);
-        Assert.Equal(60, item.ProductionTime);
-        Assert.Equal(8, item.RunTime);
-        Assert.Equal(2, item.StopTime);
-        Assert.Equal(1, item.ErrorTime);
         Assert.Equal(4.8m, item.PlannedQty);
         Assert.Equal(13.333333m, item.Availability);
         Assert.Equal(100m, item.Performance);
         Assert.Equal(86.956522m, item.Quality);
         Assert.Equal(11.594203m, item.Oee);
+    }
+
+    [Fact]
+    public async Task Build_creates_one_item_per_active_context_on_same_machine()
+    {
+        var repository = new InMemoryOeeLocalRepository();
+        var first = await repository.EnsureTestProductionContextAsync("M16-01", 100, CancellationToken.None);
+        first.OrderId = "MO-001";
+        first.SessionId = "M16-01-MO-001-100";
+        first.BaselineRawId = "baseline-1";
+        first.BaselineCapturedAt = 100;
+        first.ProductsJson = """[{"product_id":"SP-001","gain":1.0,"cycle_time":10.0,"target":0}]""";
+        var second = new ProductionContext
+        {
+            SessionId = "M16-01-MO-002-100",
+            Machine = "M16-01",
+            Status = "active",
+            OrderId = "MO-002",
+            ServerOrderId = "MO-002",
+            ActivePeriodStartAt = 100,
+            CurrentPlcPeriodIndex = 1,
+            ProductsJson = """[{"product_id":"SP-002","gain":1.0,"cycle_time":10.0,"target":0}]""",
+            ExtraJson = "{}",
+            BaselineRawId = "baseline-2",
+            BaselineCapturedAt = 100
+        };
+        await repository.SaveProductionContextAsync(first, CancellationToken.None);
+        await repository.SaveProductionContextAsync(second, CancellationToken.None);
+        var builder = CreateBuilder(repository, LoadedCache(repository));
+
+        var result = await builder.BuildAsync("GW-M16-01", [Raw(readAt: 110, shotOk: 10, shotNg: 1, runTime: 10, stopTime: 0, errorTime: 0)], createdAt: 110, CancellationToken.None);
+
+        Assert.Equal(2, result.Payload.Items.Count);
+        Assert.Contains(result.Payload.Items, item => item.OrderId == "MO-001" && item.ProductCode == "SP-001");
+        Assert.Contains(result.Payload.Items, item => item.OrderId == "MO-002" && item.ProductCode == "SP-002");
     }
 
     [Fact]
@@ -75,7 +104,7 @@ public sealed class RealtimeSnapshotBuilderTests
             1,
             "GW-M16-01",
             110,
-            [new RealtimeSnapshotItemPayload("k", "M16-01", "TEST_ORDER", "SESSION", "SP", null, "run", 1, 0, 1, 1, 1, 0, 0, 10, 10, 100, 100, 10, EmptyExtra())]));
+            [new RealtimeSnapshotItemPayload("M16-01", "TEST_ORDER", "SESSION", "SP", null, "run", 1, 1, 10, 100, 100, 10, EmptyExtra())]));
         var status = new RealtimeSnapshotSyncStatusStore();
         var service = new RealtimeSnapshotSyncService(
             Options.Create(new MesSyncOptions { Enabled = true, BaseUrl = "http://localhost", SyncIntervalMs = 5000 }),

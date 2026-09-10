@@ -45,13 +45,43 @@ public sealed class ProductionCommandRequest
     public JsonElement? Extra { get; init; }
 }
 
+public sealed class ProductionCommandBatchRequest
+{
+    [JsonPropertyName("schema_version")]
+    public int SchemaVersion { get; init; } = 1;
+
+    [JsonPropertyName("gateway_id")]
+    public string GatewayId { get; init; } = string.Empty;
+
+    [JsonPropertyName("created_at")]
+    public long CreatedAt { get; init; }
+
+    [JsonPropertyName("items")]
+    public IReadOnlyList<ProductionCommandItemRequest>? Items { get; init; }
+}
+
+public sealed class ProductionCommandItemRequest
+{
+    [JsonPropertyName("command_code")]
+    public string CommandCode { get; init; } = string.Empty;
+
+    [JsonPropertyName("machine_code")]
+    public string MachineCode { get; init; } = string.Empty;
+
+    [JsonPropertyName("action")]
+    public string Action { get; init; } = string.Empty;
+
+    [JsonPropertyName("order_id")]
+    public string? OrderId { get; init; }
+
+    [JsonPropertyName("products")]
+    public IReadOnlyList<ProductionCommandProduct>? Products { get; init; }
+}
+
 public sealed class ProductionCommandProduct
 {
     [JsonPropertyName("product_code")]
     public string ProductCode { get; init; } = string.Empty;
-
-    [JsonPropertyName("product_name")]
-    public string? ProductName { get; init; }
 
     [JsonPropertyName("mold_code")]
     public string? MoldCode { get; init; }
@@ -59,14 +89,11 @@ public sealed class ProductionCommandProduct
     [JsonPropertyName("cavity")]
     public decimal Cavity { get; init; }
 
-    [JsonPropertyName("cycle_time_seconds")]
-    public decimal CycleTimeSeconds { get; init; }
+    [JsonPropertyName("cycle_time")]
+    public decimal CycleTime { get; init; }
 
     [JsonPropertyName("target_qty")]
     public int TargetQty { get; init; }
-
-    [JsonPropertyName("extra")]
-    public JsonElement? Extra { get; init; }
 }
 
 public sealed record ProductionCommandResponse(
@@ -74,9 +101,18 @@ public sealed record ProductionCommandResponse(
     [property: JsonPropertyName("machine_code")] string MachineCode,
     [property: JsonPropertyName("command_code")] string CommandCode,
     [property: JsonPropertyName("status")] string? Status,
-    [property: JsonPropertyName("production_order_code")] string? ProductionOrderCode,
+    [property: JsonPropertyName("order_id")] string? OrderId,
     [property: JsonPropertyName("session_id")] string? SessionId,
     [property: JsonPropertyName("message")] string? Message);
+
+public sealed record ProductionCommandBatchResponse(
+    [property: JsonPropertyName("accepted")] bool Accepted,
+    [property: JsonPropertyName("schema_version")] int SchemaVersion,
+    [property: JsonPropertyName("gateway_id")] string GatewayId,
+    [property: JsonPropertyName("created_at")] long CreatedAt,
+    [property: JsonPropertyName("accepted_count")] int AcceptedCount,
+    [property: JsonPropertyName("rejected_count")] int RejectedCount,
+    [property: JsonPropertyName("items")] IReadOnlyList<ProductionCommandResponse> Items);
 
 public sealed record MesSyncStatusDto(
     [property: JsonPropertyName("enabled")] bool Enabled,
@@ -92,21 +128,14 @@ public sealed record RealtimeSnapshotBatchPayload(
     [property: JsonPropertyName("items")] IReadOnlyList<RealtimeSnapshotItemPayload> Items);
 
 public sealed record RealtimeSnapshotItemPayload(
-    [property: JsonPropertyName("_key")] string Key,
     [property: JsonPropertyName("machine_code")] string MachineCode,
-    [property: JsonPropertyName("order_code")] string OrderCode,
+    [property: JsonPropertyName("order_id")] string OrderId,
     [property: JsonPropertyName("session_id")] string SessionId,
     [property: JsonPropertyName("product_code")] string ProductCode,
     [property: JsonPropertyName("mold_code")] string? MoldCode,
     [property: JsonPropertyName("machine_state")] string MachineState,
-    [property: JsonPropertyName("good_qty")] long GoodQty,
-    [property: JsonPropertyName("ng_qty")] long NgQty,
     [property: JsonPropertyName("actual_qty")] long ActualQty,
     [property: JsonPropertyName("planned_qty")] decimal PlannedQty,
-    [property: JsonPropertyName("run_time")] long RunTime,
-    [property: JsonPropertyName("stop_time")] long StopTime,
-    [property: JsonPropertyName("error_time")] long ErrorTime,
-    [property: JsonPropertyName("production_time")] long ProductionTime,
     [property: JsonPropertyName("availability")] decimal Availability,
     [property: JsonPropertyName("performance")] decimal Performance,
     [property: JsonPropertyName("quality")] decimal Quality,
@@ -126,6 +155,7 @@ public sealed record RealtimeSnapshotSyncStatus(
 
 public interface IProductionCommandService
 {
+    Task<ProductionCommandBatchResponse> HandleBatchAsync(ProductionCommandBatchRequest request, CancellationToken cancellationToken);
     Task<ProductionCommandResponse> HandleAsync(ProductionCommandRequest request, CancellationToken cancellationToken);
 }
 

@@ -1,20 +1,24 @@
 # MES Realtime OEE API
 
-Tài liệu này mô tả API mà MES server cần mở để Rostek Gateway gửi dữ liệu realtime OEE.
+Tài liệu này mô tả contract API giữa MES server và Rostek Gateway cho luồng OEE realtime.
 
-Gateway hiện gửi dữ liệu theo chu kỳ cấu hình, mặc định 5 giây/lần. Mỗi request có thể chứa nhiều máy trong field `items`.
-
-## Endpoint
+## Namespace
 
 ```http
-POST /api/v1/gateway/oee/realtime-snapshots
-Content-Type: application/json
-Authorization: Bearer <token>
+MES -> Gateway: POST /api/v1/gateway/oee/production-commands
+Gateway -> MES: POST /api/v1/gateway/oee/realtime-snapshots
 ```
 
-Gateway coi request là thành công khi MES trả HTTP status `2xx`.
+Payload dùng `snake_case`, Unix seconds, `schema_version = 1`.
 
-## Request Body
+## 1. MES Gửi Lệnh Sản Xuất Xuống Gateway
+
+```http
+POST /api/v1/gateway/oee/production-commands
+Content-Type: application/json
+```
+
+Request:
 
 ```json
 {
@@ -23,21 +27,89 @@ Gateway coi request là thành công khi MES trả HTTP status `2xx`.
   "created_at": 1788750000,
   "items": [
     {
-      "_key": "9f91f8d6b0e2b2b5d8a6a7f0e8a4c4f8",
+      "command_code": "CMD-20260909-0001",
       "machine_code": "M16-01",
-      "order_code": "LSX-001",
-      "session_id": "SESSION-001",
+      "action": "start",
+      "order_id": "LSX-001",
+      "products": [
+        {
+          "product_code": "SP-001",
+          "mold_code": "KHUON-001",
+          "cavity": 4,
+          "cycle_time": 16.0,
+          "target_qty": 10000
+        }
+      ]
+    }
+  ]
+}
+```
+
+Response:
+
+```json
+{
+  "accepted": true,
+  "schema_version": 1,
+  "gateway_id": "GW-M16-01",
+  "created_at": 1788750001,
+  "accepted_count": 1,
+  "rejected_count": 0,
+  "items": [
+    {
+      "accepted": true,
+      "machine_code": "M16-01",
+      "command_code": "CMD-20260909-0001",
+      "status": "active",
+      "order_id": "LSX-001",
+      "session_id": "M16-01-LSX-001-1788750000",
+      "message": "Accepted"
+    }
+  ]
+}
+```
+
+Rules:
+
+- `items` là array bắt buộc; một request có thể chứa nhiều lệnh.
+- Một item lỗi không làm fail cả batch.
+- `action` nhận `start`, `pause`, `stop`.
+- `start` cần `command_code`, `machine_code`, `order_id`, `products`.
+- `pause`/`stop` cần `command_code`, `machine_code`, `order_id`.
+- `session_id` do Gateway tự sinh khi `start`.
+- Một máy có thể chạy nhiều `order_id` cùng lúc.
+- Không cho có hai active sessions cùng `machine_code + order_id`.
+- Nếu `start` lại cùng `machine_code + order_id` đang active/pause, Gateway reuse `session_id` hiện tại và update `products`.
+- Nếu session cũ đã `stopped`, `start` mới tạo `session_id` mới.
+- Sau `stop`, session bị xoá khỏi `production_context`; history của session vẫn nằm trong `production_period`.
+
+## 2. Gateway Gửi Realtime Snapshot Lên MES
+
+```http
+POST /api/v1/gateway/oee/realtime-snapshots
+Authorization: Bearer <token>
+Content-Type: application/json
+```
+
+Gateway gửi theo chu kỳ cấu hình, mặc định 5 giây/lần. Mỗi `item` tương ứng một active/pause session/order.
+
+Payload:
+
+```json
+{
+  "schema_version": 1,
+  "gateway_id": "GW-M16-01",
+  "created_at": 1788750000,
+  "items": [
+    {
+      "machine_code": "M16-01",
+      "order_id": "LSX-001",
+      "session_id": "M16-01-LSX-001-1788750000",
       "product_code": "SP-001",
       "mold_code": "KHUON-001",
       "machine_state": "run",
-      "good_qty": 120,
-      "ng_qty": 5,
       "actual_qty": 125,
       "planned_qty": 144,
-      "run_time": 1500,
-      "stop_time": 240,
-      "error_time": 60,
-      "production_time": 1800,
       "availability": 83.333333,
       "performance": 86.805556,
       "quality": 96,
@@ -48,42 +120,27 @@ Gateway coi request là thành công khi MES trả HTTP status `2xx`.
 }
 ```
 
-## Field Schema
+Item fields:
 
 | Field | Type | Required | Description |
 |---|---:|---:|---|
-| `schema_version` | integer | yes | Version payload. Hiện tại là `1`. |
-| `gateway_id` | string | yes | Mã Gateway gửi dữ liệu. |
-| `created_at` | integer | yes | Unix timestamp seconds, thời điểm Gateway build payload. |
-| `items` | array | yes | Danh sách realtime snapshot của các máy. |
-
-## Item Schema
-
-| Field | Type | Required | Description |
-|---|---:|---:|---|
-| `_key` | string | yes | Trace id dạng GUID hex 32 ký tự. Sinh mới mỗi lần gửi, không dùng làm durable idempotency key. |
-| `machine_code` | string | yes | Mã máy trong MES/Gateway. |
-| `order_code` | string | yes | Mã lệnh sản xuất hiện tại. |
-| `session_id` | string | yes | Mã lượt sản xuất/session hiện tại. |
-| `product_code` | string | yes | Mã sản phẩm đang chạy. |
-| `mold_code` | string/null | no | Mã khuôn. Có thể `null`. |
-| `machine_state` | string | yes | Trạng thái máy: `run`, `stop`, `error`, `disconnect`. |
-| `good_qty` | integer | yes | Số lượng OK tính từ đầu session. |
-| `ng_qty` | integer | yes | Số lượng NG tính từ đầu session. |
-| `actual_qty` | integer | yes | `good_qty + ng_qty`. |
-| `planned_qty` | number | yes | Sản lượng kế hoạch tại thời điểm gửi. |
-| `run_time` | integer | yes | Tổng thời gian chạy từ đầu session, đơn vị giây. |
-| `stop_time` | integer | yes | Tổng thời gian dừng từ đầu session, đơn vị giây. |
-| `error_time` | integer | yes | Tổng thời gian lỗi từ đầu session, đơn vị giây. |
-| `production_time` | integer | yes | Thời gian từ lúc bắt đầu session đến hiện tại, đơn vị giây. |
+| `machine_code` | string | yes | Mã máy trong Gateway/MES. |
+| `order_id` | string | yes | Mã lệnh sản xuất. |
+| `session_id` | string | yes | Mã lượt sản xuất do Gateway sinh. |
+| `product_code` | string | yes | Mã sản phẩm chính của order/session. |
+| `mold_code` | string/null | no | Mã khuôn. |
+| `machine_state` | string | yes | `run`, `stop`, `error`, `disconnect`. |
+| `actual_qty` | integer | yes | Sản lượng thực tế từ đầu session, tính từ counter PLC hiện tại trừ baseline session. |
+| `planned_qty` | number | yes | Sản lượng kế hoạch từ đầu session. |
 | `availability` | number | yes | A, phần trăm `0..100`. |
 | `performance` | number | yes | P, phần trăm `0..100`. |
 | `quality` | number | yes | Q, phần trăm `0..100`. |
 | `oee` | number | yes | OEE, phần trăm `0..100`. |
-| `extra` | object | yes | Object mở rộng. Hiện Gateway gửi `{}`. |
+| `extra` | object | yes | Hiện tại Gateway gửi `{}`. |
 
+Gateway coi request là thành công khi MES trả HTTP status `2xx`.
 
-## Suggested Success Response
+Response đề xuất:
 
 ```json
 {
@@ -91,14 +148,3 @@ Gateway coi request là thành công khi MES trả HTTP status `2xx`.
   "message": "OK"
 }
 ```
-
-## Suggested Error Response
-
-```json
-{
-  "accepted": false,
-  "message": "Invalid payload"
-}
-```
-
-Gateway hiện chỉ cần HTTP status để xác định thành công/thất bại. Response body có thể dùng cho log/debug phía MES.

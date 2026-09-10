@@ -52,19 +52,29 @@ public sealed class RawDataCaptureService(
         }
 
         var readAt = AlignToInterval(snapshot.LastReadUtc.Value.ToUniversalTime().ToUnixTimeSeconds(), intervalSeconds);
-        var context = productionContextCache.Get(snapshot.MachineCode);
-        if (context is null && !requireProductionContext)
+        var contexts = productionContextCache.GetCapturableByMachine(snapshot.MachineCode);
+        if (contexts.Count == 0)
         {
-            context = await repository.EnsureTestProductionContextAsync(snapshot.MachineCode, readAt, cancellationToken);
-            productionContextCache.Upsert(context);
+            contexts = await repository.ListCapturableProductionContextsAsync(snapshot.MachineCode, cancellationToken);
         }
 
-        if (context is null || !IsCapturableContext(context.Status))
+        if (contexts.Count == 0 && !requireProductionContext)
+        {
+            var context = await repository.EnsureTestProductionContextAsync(snapshot.MachineCode, readAt, cancellationToken);
+            productionContextCache.Upsert(context);
+            contexts = [context];
+        }
+
+        if (contexts.Count == 0)
         {
             return null;
         }
 
-        await repository.EnsureProductionPeriodAsync(context, context.ActivePeriodStartAt > 0 ? context.ActivePeriodStartAt : readAt, cancellationToken);
+        var primaryContext = contexts
+            .OrderBy(context => context.OrderId, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(context => context.SessionId, StringComparer.OrdinalIgnoreCase)
+            .First();
+        await repository.EnsureProductionPeriodAsync(primaryContext, primaryContext.ActivePeriodStartAt > 0 ? primaryContext.ActivePeriodStartAt : readAt, cancellationToken);
 
         var signals = snapshot.Values
             .GroupBy(value => value.SignalCode, StringComparer.OrdinalIgnoreCase)
@@ -77,7 +87,7 @@ public sealed class RawDataCaptureService(
         {
             Machine = snapshot.MachineCode,
             ReadAt = readAt,
-            PlcPeriodIndex = context.CurrentPlcPeriodIndex,
+            PlcPeriodIndex = primaryContext.CurrentPlcPeriodIndex,
             RunState = ReadRunState(signals),
             ShotOkTotal = ReadInt64(signals, OeeSignalCodes.ShotOkCount) ?? 0,
             ShotNgTotal = ReadInt64(signals, OeeSignalCodes.ShotNgCount) ?? 0,
@@ -85,13 +95,9 @@ public sealed class RawDataCaptureService(
             StopTimeTotalSec = ReadInt64(signals, OeeSignalCodes.StopTimeTotal) ?? 0,
             ErrorTimeTotalSec = ReadInt64(signals, OeeSignalCodes.ErrorTimeTotal) ?? 0,
             CycleTimeMs = ReadInt32(signals, OeeSignalCodes.CycleTimeMs) ?? 0,
-            PeriodActive = IsCapturableContext(context.Status) ? 1 : 0
+            PeriodActive = 1
         };
     }
-
-    private static bool IsCapturableContext(string status) =>
-        status.Equals("active", StringComparison.OrdinalIgnoreCase) ||
-        status.Equals("pause", StringComparison.OrdinalIgnoreCase);
 
     private static string ReadRunState(IReadOnlyDictionary<string, SignalValueDto> signals)
     {

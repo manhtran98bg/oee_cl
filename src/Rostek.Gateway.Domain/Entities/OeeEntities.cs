@@ -2,11 +2,11 @@ namespace Rostek.Gateway.Domain.Entities;
 
 public sealed class ProductionContext
 {
+    public string SessionId { get; set; } = string.Empty;
     public string Machine { get; set; } = string.Empty;
     public string Status { get; set; } = "active";
-    public string OrderCode { get; set; } = string.Empty;
+    public string OrderId { get; set; } = string.Empty;
     public string ServerOrderId { get; set; } = string.Empty;
-    public string ActivePeriodId { get; set; } = string.Empty;
     public long ActivePeriodStartAt { get; set; }
     public int CurrentPlcPeriodIndex { get; set; }
     public string ProductsJson { get; set; } = "[]";
@@ -27,7 +27,7 @@ public sealed class ProductionPeriod
     public string PeriodId { get; set; } = string.Empty;
     public string Machine { get; set; } = string.Empty;
     public int PlcPeriodIndex { get; set; }
-    public string OrderCode { get; set; } = string.Empty;
+    public string OrderId { get; set; } = string.Empty;
     public string ServerOrderId { get; set; } = string.Empty;
     public string ProductsJson { get; set; } = "[]";
     public string ExtraJson { get; set; } = "{}";

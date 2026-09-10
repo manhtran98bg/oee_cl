@@ -14,12 +14,12 @@ public sealed class OeeDbContext(DbContextOptions<OeeDbContext> options) : DbCon
         modelBuilder.Entity<ProductionContext>(entity =>
         {
             entity.ToTable("production_context");
-            entity.HasKey(context => context.Machine);
+            entity.HasKey(context => context.SessionId);
+            entity.Property(context => context.SessionId).HasColumnName("session_id").HasMaxLength(100).IsRequired();
             entity.Property(context => context.Machine).HasColumnName("machine").HasMaxLength(100).IsRequired();
             entity.Property(context => context.Status).HasColumnName("status").HasMaxLength(50).IsRequired();
-            entity.Property(context => context.OrderCode).HasColumnName("order_code").HasMaxLength(100).IsRequired();
+            entity.Property(context => context.OrderId).HasColumnName("order_id").HasMaxLength(100).IsRequired();
             entity.Property(context => context.ServerOrderId).HasColumnName("server_order_id").HasMaxLength(100).IsRequired();
-            entity.Property(context => context.ActivePeriodId).HasColumnName("active_period_id").HasMaxLength(100).IsRequired();
             entity.Property(context => context.ActivePeriodStartAt).HasColumnName("active_period_start_at").IsRequired();
             entity.Property(context => context.CurrentPlcPeriodIndex).HasColumnName("current_plc_period_index").IsRequired();
             entity.Property(context => context.ProductsJson).HasColumnName("products_json").IsRequired();
@@ -33,6 +33,11 @@ public sealed class OeeDbContext(DbContextOptions<OeeDbContext> options) : DbCon
             entity.Property(context => context.BaselineErrorTimeTotalSec).HasColumnName("baseline_error_time_total_sec").IsRequired();
             entity.Property(context => context.BaselineCycleTimeMs).HasColumnName("baseline_cycle_time_ms").IsRequired();
             entity.Property(context => context.UpdatedAt).HasColumnName("updated_at").IsRequired();
+            entity.HasIndex(context => new { context.Machine, context.OrderId, context.Status })
+                .HasDatabaseName("ix_production_context_machine_order_status");
+            entity.HasIndex(context => new { context.Machine, context.OrderId })
+                .IsUnique()
+                .HasDatabaseName("ux_production_context_machine_order");
         });
 
         modelBuilder.Entity<ProductionPeriod>(entity =>
@@ -42,7 +47,7 @@ public sealed class OeeDbContext(DbContextOptions<OeeDbContext> options) : DbCon
             entity.Property(period => period.PeriodId).HasColumnName("period_id").HasMaxLength(100).IsRequired();
             entity.Property(period => period.Machine).HasColumnName("machine").HasMaxLength(100).IsRequired();
             entity.Property(period => period.PlcPeriodIndex).HasColumnName("plc_period_index").IsRequired();
-            entity.Property(period => period.OrderCode).HasColumnName("order_code").HasMaxLength(100).IsRequired();
+            entity.Property(period => period.OrderId).HasColumnName("order_id").HasMaxLength(100).IsRequired();
             entity.Property(period => period.ServerOrderId).HasColumnName("server_order_id").HasMaxLength(100).IsRequired();
             entity.Property(period => period.ProductsJson).HasColumnName("products_json").IsRequired();
             entity.Property(period => period.ExtraJson).HasColumnName("extra_json").IsRequired();
@@ -51,7 +56,7 @@ public sealed class OeeDbContext(DbContextOptions<OeeDbContext> options) : DbCon
             entity.Property(period => period.Status).HasColumnName("status").HasMaxLength(50).IsRequired();
             entity.Property(period => period.CreatedAt).HasColumnName("created_at").IsRequired();
             entity.Property(period => period.UpdatedAt).HasColumnName("updated_at").IsRequired();
-            entity.HasIndex(period => new { period.Machine, period.OrderCode, period.PlcPeriodIndex })
+            entity.HasIndex(period => new { period.Machine, period.OrderId, period.PlcPeriodIndex })
                 .IsUnique()
                 .HasDatabaseName("ux_production_period_machine_order_plc");
             entity.HasIndex(period => new { period.Machine, period.Status })

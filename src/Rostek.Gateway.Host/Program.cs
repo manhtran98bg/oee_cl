@@ -99,14 +99,14 @@ using (var scope = app.Services.CreateScope())
     var productionContexts = await oeeRepository.ListProductionContextsAsync(CancellationToken.None);
     productionContextCache.Replace(productionContexts);
     startupLogger.LogInformation("Loaded {ProductionContextCount} production contexts into OEE memory store", productionContexts.Count);
-    foreach (var context in productionContexts.Values.OrderBy(context => context.Machine, StringComparer.OrdinalIgnoreCase))
+    foreach (var context in productionContexts.OrderBy(context => context.Machine, StringComparer.OrdinalIgnoreCase).ThenBy(context => context.OrderId, StringComparer.OrdinalIgnoreCase))
     {
         startupLogger.LogInformation(
-            "Loaded production context. Machine={Machine}, Status={Status}, OrderCode={OrderCode}, SessionId={SessionId}, ActivePeriodStartAt={ActivePeriodStartAt}, PlcPeriodIndex={PlcPeriodIndex}, BaselineRawId={BaselineRawId}, BaselineCapturedAt={BaselineCapturedAt}, ProductsJson={ProductsJson}",
+            "Loaded production context. Machine={Machine}, Status={Status}, OrderId={OrderId}, SessionId={SessionId}, ActivePeriodStartAt={ActivePeriodStartAt}, PlcPeriodIndex={PlcPeriodIndex}, BaselineRawId={BaselineRawId}, BaselineCapturedAt={BaselineCapturedAt}, ProductsJson={ProductsJson}",
             context.Machine,
             context.Status,
-            context.OrderCode,
-            context.ActivePeriodId,
+            context.OrderId,
+            context.SessionId,
             context.ActivePeriodStartAt,
             context.CurrentPlcPeriodIndex,
             context.BaselineRawId,
@@ -173,6 +173,26 @@ app.MapGet("/api/v1/machines/{machineCode}/runtime-status", (string machineCode,
 
 app.MapGet("/api/v1/machines/{machineCode}/values", (string machineCode, IMachineValueReader valueReader) =>
     valueReader.GetSnapshot(machineCode) is { } snapshot ? Results.Ok(snapshot) : Results.NotFound());
+
+app.MapPost("/api/v1/gateway/oee/production-commands", async (ProductionCommandBatchRequest request, IProductionCommandService commandService, CancellationToken cancellationToken) =>
+{
+    if (request.SchemaVersion != 1 || request.Items is not { Count: > 0 })
+    {
+        return Results.BadRequest(new
+        {
+            accepted = false,
+            schema_version = request.SchemaVersion,
+            gateway_id = request.GatewayId,
+            created_at = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            accepted_count = 0,
+            rejected_count = request.Items?.Count ?? 0,
+            items = Array.Empty<object>(),
+            message = "schema_version must be 1 and items is required."
+        });
+    }
+
+    return Results.Ok(await commandService.HandleBatchAsync(request, cancellationToken));
+});
 
 app.MapPost("/api/v1/mes/production-commands", async (ProductionCommandRequest request, IProductionCommandService commandService, CancellationToken cancellationToken) =>
 {

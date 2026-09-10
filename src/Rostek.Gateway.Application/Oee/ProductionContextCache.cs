@@ -4,41 +4,74 @@ namespace Rostek.Gateway.Application.Oee;
 
 public interface IProductionContextCache
 {
-    IReadOnlyDictionary<string, ProductionContext> Current { get; }
-    ProductionContext? Get(string machine);
-    void Replace(IReadOnlyDictionary<string, ProductionContext> contexts);
+    IReadOnlyList<ProductionContext> Current { get; }
+    ProductionContext? Get(string sessionId);
+    ProductionContext? GetActive(string machine, string orderId);
+    IReadOnlyList<ProductionContext> GetCapturableByMachine(string machine);
+    void Replace(IReadOnlyCollection<ProductionContext> contexts);
     void Upsert(ProductionContext context);
+    void Remove(string sessionId);
 }
 
 public sealed class ProductionContextCache : IProductionContextCache
 {
     private readonly object _lock = new();
-    private Dictionary<string, ProductionContext> _contexts = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, ProductionContext> _contextsBySession = new(StringComparer.OrdinalIgnoreCase);
 
-    public IReadOnlyDictionary<string, ProductionContext> Current
+    public IReadOnlyList<ProductionContext> Current
     {
         get
         {
             lock (_lock)
             {
-                return _contexts.ToDictionary(item => item.Key, item => Clone(item.Value), StringComparer.OrdinalIgnoreCase);
+                return _contextsBySession.Values.Select(Clone).ToList();
             }
         }
     }
 
-    public ProductionContext? Get(string machine)
+    public ProductionContext? Get(string sessionId)
     {
         lock (_lock)
         {
-            return _contexts.TryGetValue(machine, out var context) ? Clone(context) : null;
+            return _contextsBySession.TryGetValue(sessionId, out var context) ? Clone(context) : null;
         }
     }
 
-    public void Replace(IReadOnlyDictionary<string, ProductionContext> contexts)
+    public ProductionContext? GetActive(string machine, string orderId)
     {
         lock (_lock)
         {
-            _contexts = contexts.ToDictionary(item => item.Key, item => Clone(item.Value), StringComparer.OrdinalIgnoreCase);
+            return _contextsBySession.Values
+                .Where(context =>
+                    context.Machine.Equals(machine, StringComparison.OrdinalIgnoreCase) &&
+                    context.OrderId.Equals(orderId, StringComparison.OrdinalIgnoreCase) &&
+                    IsCapturable(context.Status))
+                .OrderByDescending(context => context.ActivePeriodStartAt)
+                .Select(Clone)
+                .FirstOrDefault();
+        }
+    }
+
+    public IReadOnlyList<ProductionContext> GetCapturableByMachine(string machine)
+    {
+        lock (_lock)
+        {
+            return _contextsBySession.Values
+                .Where(context => context.Machine.Equals(machine, StringComparison.OrdinalIgnoreCase) && IsCapturable(context.Status))
+                .OrderBy(context => context.OrderId, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(context => context.SessionId, StringComparer.OrdinalIgnoreCase)
+                .Select(Clone)
+                .ToList();
+        }
+    }
+
+    public void Replace(IReadOnlyCollection<ProductionContext> contexts)
+    {
+        lock (_lock)
+        {
+            _contextsBySession = contexts
+                .Where(context => !string.IsNullOrWhiteSpace(context.SessionId))
+                .ToDictionary(context => context.SessionId, Clone, StringComparer.OrdinalIgnoreCase);
         }
     }
 
@@ -46,18 +79,30 @@ public sealed class ProductionContextCache : IProductionContextCache
     {
         lock (_lock)
         {
-            _contexts[context.Machine] = Clone(context);
+            _contextsBySession[context.SessionId] = Clone(context);
         }
     }
+
+    public void Remove(string sessionId)
+    {
+        lock (_lock)
+        {
+            _contextsBySession.Remove(sessionId);
+        }
+    }
+
+    private static bool IsCapturable(string status) =>
+        status.Equals("active", StringComparison.OrdinalIgnoreCase) ||
+        status.Equals("pause", StringComparison.OrdinalIgnoreCase);
 
     private static ProductionContext Clone(ProductionContext context) =>
         new()
         {
+            SessionId = context.SessionId,
             Machine = context.Machine,
             Status = context.Status,
-            OrderCode = context.OrderCode,
+            OrderId = context.OrderId,
             ServerOrderId = context.ServerOrderId,
-            ActivePeriodId = context.ActivePeriodId,
             ActivePeriodStartAt = context.ActivePeriodStartAt,
             CurrentPlcPeriodIndex = context.CurrentPlcPeriodIndex,
             ProductsJson = context.ProductsJson,

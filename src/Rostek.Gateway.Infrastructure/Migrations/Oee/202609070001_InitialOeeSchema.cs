@@ -15,11 +15,11 @@ public partial class InitialOeeSchema : Migration
     {
         migrationBuilder.Sql("""
             create table production_context (
-                machine TEXT not null primary key,
+                session_id TEXT not null primary key,
+                machine TEXT not null,
                 status TEXT not null default 'active',
-                order_code TEXT not null default '',
+                order_id TEXT not null default '',
                 server_order_id TEXT not null default '',
-                active_period_id TEXT not null default '',
                 active_period_start_at INTEGER not null default 0,
                 current_plc_period_index INTEGER not null default 0,
                 products_json TEXT not null default '[]',
@@ -35,11 +35,17 @@ public partial class InitialOeeSchema : Migration
                 updated_at INTEGER not null
             );
 
+            create index ix_production_context_machine_order_status
+            on production_context(machine, order_id, status);
+
+            create unique index ux_production_context_machine_order
+            on production_context(machine, order_id);
+
             create table production_period (
                 period_id TEXT not null primary key,
                 machine TEXT not null,
                 plc_period_index INTEGER not null,
-                order_code TEXT not null default '',
+                order_id TEXT not null default '',
                 server_order_id TEXT not null default '',
                 products_json TEXT not null default '[]',
                 extra_json TEXT not null default '{}',
@@ -51,7 +57,7 @@ public partial class InitialOeeSchema : Migration
             );
 
             create unique index ux_production_period_machine_order_plc
-            on production_period(machine, order_code, plc_period_index);
+            on production_period(machine, order_id, plc_period_index);
 
             create index ix_production_period_machine_status
             on production_period(machine, status);

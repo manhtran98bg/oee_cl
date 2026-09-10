@@ -150,8 +150,8 @@ public sealed class SqlitePersistenceTests
         var duplicate = await repository.InsertMissingRawIntervalsAsync([Raw("M16-01", 10, 101)], CancellationToken.None);
         var insertedSecond = await repository.InsertMissingRawIntervalsAsync([Raw("M16-01", 15, 108)], CancellationToken.None);
 
-        Assert.Equal("TEST_ORDER", context.OrderCode);
-        Assert.Equal(context.ActivePeriodId, period.PeriodId);
+        Assert.Equal("TEST_ORDER", context.OrderId);
+        Assert.Equal(context.SessionId, period.PeriodId);
         Assert.Single(insertedFirst);
         Assert.Empty(duplicate);
         Assert.Single(insertedSecond);

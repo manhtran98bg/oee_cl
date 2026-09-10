@@ -7,19 +7,41 @@ namespace Rostek.Gateway.Infrastructure.Oee;
 
 public sealed class EfCoreOeeLocalRepository(OeeDbContext dbContext) : IOeeLocalRepository
 {
-    public Task<ProductionContext?> GetProductionContextAsync(string machine, CancellationToken cancellationToken) =>
+    public Task<ProductionContext?> GetProductionContextAsync(string sessionId, CancellationToken cancellationToken) =>
         dbContext.ProductionContexts.FirstOrDefaultAsync(
-            context => context.Machine.ToUpper() == machine.ToUpper(),
+            context => context.SessionId == sessionId,
             cancellationToken);
 
-    public async Task<IReadOnlyDictionary<string, ProductionContext>> ListProductionContextsAsync(CancellationToken cancellationToken) =>
+    public Task<ProductionContext?> GetActiveProductionContextAsync(string machine, string orderId, CancellationToken cancellationToken) =>
+        dbContext.ProductionContexts
+            .Where(context =>
+                context.Machine.ToUpper() == machine.ToUpper() &&
+                context.OrderId.ToUpper() == orderId.ToUpper() &&
+                (context.Status == "active" || context.Status == "pause"))
+            .OrderByDescending(context => context.ActivePeriodStartAt)
+            .FirstOrDefaultAsync(cancellationToken);
+
+    public async Task<IReadOnlyList<ProductionContext>> ListProductionContextsAsync(CancellationToken cancellationToken) =>
         await dbContext.ProductionContexts
             .AsNoTracking()
-            .ToDictionaryAsync(context => context.Machine, StringComparer.OrdinalIgnoreCase, cancellationToken);
+            .Where(context => context.Status == "active" || context.Status == "pause")
+            .OrderBy(context => context.Machine)
+            .ThenBy(context => context.OrderId)
+            .ToListAsync(cancellationToken);
+
+    public async Task<IReadOnlyList<ProductionContext>> ListCapturableProductionContextsAsync(string machine, CancellationToken cancellationToken) =>
+        await dbContext.ProductionContexts
+            .AsNoTracking()
+            .Where(context =>
+                context.Machine.ToUpper() == machine.ToUpper() &&
+                (context.Status == "active" || context.Status == "pause"))
+            .OrderBy(context => context.OrderId)
+            .ThenBy(context => context.SessionId)
+            .ToListAsync(cancellationToken);
 
     public async Task<ProductionContext> EnsureTestProductionContextAsync(string machine, long startAt, CancellationToken cancellationToken)
     {
-        var existing = await GetProductionContextAsync(machine, cancellationToken);
+        var existing = await GetActiveProductionContextAsync(machine, OeeTestProductionContext.OrderId, cancellationToken);
         if (existing is not null)
         {
             return existing;
@@ -27,11 +49,11 @@ public sealed class EfCoreOeeLocalRepository(OeeDbContext dbContext) : IOeeLocal
 
         var context = new ProductionContext
         {
+            SessionId = $"{machine}-{OeeTestProductionContext.PeriodId}",
             Machine = machine,
             Status = "active",
-            OrderCode = OeeTestProductionContext.OrderCode,
+            OrderId = OeeTestProductionContext.OrderId,
             ServerOrderId = OeeTestProductionContext.ServerOrderId,
-            ActivePeriodId = $"{machine}-{OeeTestProductionContext.PeriodId}",
             ActivePeriodStartAt = startAt,
             CurrentPlcPeriodIndex = OeeTestProductionContext.PlcPeriodIndex,
             ProductsJson = OeeTestProductionContext.ProductsJson,
@@ -47,7 +69,7 @@ public sealed class EfCoreOeeLocalRepository(OeeDbContext dbContext) : IOeeLocal
     {
         if (dbContext.Entry(context).State == EntityState.Detached)
         {
-            var exists = await dbContext.ProductionContexts.AnyAsync(item => item.Machine.ToUpper() == context.Machine.ToUpper(), cancellationToken);
+            var exists = await dbContext.ProductionContexts.AnyAsync(item => item.SessionId == context.SessionId, cancellationToken);
             if (exists)
             {
                 dbContext.ProductionContexts.Update(context);
@@ -61,12 +83,24 @@ public sealed class EfCoreOeeLocalRepository(OeeDbContext dbContext) : IOeeLocal
         await dbContext.SaveChangesAsync(cancellationToken);
     }
 
+    public async Task DeleteProductionContextAsync(string sessionId, CancellationToken cancellationToken)
+    {
+        var context = await dbContext.ProductionContexts.FirstOrDefaultAsync(item => item.SessionId == sessionId, cancellationToken);
+        if (context is null)
+        {
+            return;
+        }
+
+        dbContext.ProductionContexts.Remove(context);
+        await dbContext.SaveChangesAsync(cancellationToken);
+    }
+
     public Task<ProductionPeriod?> GetProductionPeriodAsync(string periodId, CancellationToken cancellationToken) =>
         dbContext.ProductionPeriods.AsNoTracking().FirstOrDefaultAsync(period => period.PeriodId == periodId, cancellationToken);
 
     public async Task<ProductionPeriod> EnsureProductionPeriodAsync(ProductionContext context, long startAt, CancellationToken cancellationToken)
     {
-        var existing = await dbContext.ProductionPeriods.FirstOrDefaultAsync(period => period.PeriodId == context.ActivePeriodId, cancellationToken);
+        var existing = await dbContext.ProductionPeriods.FirstOrDefaultAsync(period => period.PeriodId == context.SessionId, cancellationToken);
         if (existing is not null)
         {
             return existing;
@@ -74,10 +108,10 @@ public sealed class EfCoreOeeLocalRepository(OeeDbContext dbContext) : IOeeLocal
 
         var period = new ProductionPeriod
         {
-            PeriodId = context.ActivePeriodId,
+            PeriodId = context.SessionId,
             Machine = context.Machine,
             PlcPeriodIndex = context.CurrentPlcPeriodIndex,
-            OrderCode = context.OrderCode,
+            OrderId = context.OrderId,
             ServerOrderId = context.ServerOrderId,
             ProductsJson = context.ProductsJson,
             ExtraJson = context.ExtraJson,
@@ -91,10 +125,10 @@ public sealed class EfCoreOeeLocalRepository(OeeDbContext dbContext) : IOeeLocal
         return period;
     }
 
-    public async Task<int> GetNextPlcPeriodIndexAsync(string machine, string orderCode, CancellationToken cancellationToken)
+    public async Task<int> GetNextPlcPeriodIndexAsync(string machine, string orderId, CancellationToken cancellationToken)
     {
         var currentMax = await dbContext.ProductionPeriods
-            .Where(period => period.Machine.ToUpper() == machine.ToUpper() && period.OrderCode == orderCode)
+            .Where(period => period.Machine.ToUpper() == machine.ToUpper() && period.OrderId.ToUpper() == orderId.ToUpper())
             .Select(period => (int?)period.PlcPeriodIndex)
             .MaxAsync(cancellationToken);
         return (currentMax ?? 0) + 1;

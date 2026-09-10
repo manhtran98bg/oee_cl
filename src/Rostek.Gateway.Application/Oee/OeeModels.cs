@@ -17,7 +17,7 @@ public static class OeeSignalCodes
 
 public static class OeeTestProductionContext
 {
-    public const string OrderCode = "TEST_ORDER";
+    public const string OrderId = "TEST_ORDER";
     public const string ServerOrderId = "TEST_SERVER_ORDER";
     public const string PeriodId = "TEST_SESSION";
     public const int PlcPeriodIndex = 1;
