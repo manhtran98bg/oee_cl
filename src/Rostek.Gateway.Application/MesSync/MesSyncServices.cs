@@ -310,6 +310,8 @@ public sealed class RealtimeSnapshotBuilder(
                 var goodQty = DeltaOrZero(raw.ShotOkTotal, context.BaselineShotOkTotal, raw.Machine, OeeSignalCodes.ShotOkCount);
                 var ngQty = DeltaOrZero(raw.ShotNgTotal, context.BaselineShotNgTotal, raw.Machine, OeeSignalCodes.ShotNgCount);
                 var runTime = DeltaOrZero(raw.RunTimeTotalSec, context.BaselineRunTimeTotalSec, raw.Machine, OeeSignalCodes.RunTimeTotal);
+                var stopTime = DeltaOrZero(raw.StopTimeTotalSec, context.BaselineStopTimeTotalSec, raw.Machine, OeeSignalCodes.StopTimeTotal);
+                var errorTime = DeltaOrZero(raw.ErrorTimeTotalSec, context.BaselineErrorTimeTotalSec, raw.Machine, OeeSignalCodes.ErrorTimeTotal);
                 var productionTime = Math.Max(0, createdAt - context.ActivePeriodStartAt);
                 var actualQty = goodQty + ngQty;
                 var cycleTimeSeconds = product.EffectiveCycleTime > 0
@@ -340,7 +342,7 @@ public sealed class RealtimeSnapshotBuilder(
                 items.Add(item);
 
                 logger.LogInformation(
-                    "Realtime OEE snapshot calculated. Machine={Machine}, OrderId={OrderId}, SessionId={SessionId}, Product={Product}, State={State}, ActualQty={ActualQty}, PlannedQty={PlannedQty}, A={Availability}, P={Performance}, Q={Quality}, OEE={Oee}",
+                    "Realtime OEE snapshot calculated. Machine={Machine}, OrderId={OrderId}, SessionId={SessionId}, Product={Product}, State={State}, ActualQty={ActualQty}, PlannedQty={PlannedQty}, RunTime={RunTime}, StopTime={StopTime}, ErrorTime={ErrorTime}, ProductionTime={ProductionTime}, A={Availability}, P={Performance}, Q={Quality}, OEE={Oee}",
                     item.MachineCode,
                     item.OrderId,
                     item.SessionId,
@@ -348,6 +350,10 @@ public sealed class RealtimeSnapshotBuilder(
                     item.MachineState,
                     item.ActualQty,
                     item.PlannedQty,
+                    runTime,
+                    stopTime,
+                    errorTime,
+                    productionTime,
                     item.Availability,
                     item.Performance,
                     item.Quality,
