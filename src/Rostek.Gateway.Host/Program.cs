@@ -48,6 +48,7 @@ builder.Services.AddScoped<IConfigurationVersionService, ConfigurationVersionSer
 builder.Services.AddScoped<IConfigurationImportExportService, ConfigurationImportExportService>();
 builder.Services.AddScoped<IDashboardService, DashboardService>();
 builder.Services.AddScoped<IRawDataCaptureService, RawDataCaptureService>();
+builder.Services.AddSingleton<IGatewayOeeTimerService, GatewayOeeTimerService>();
 builder.Services.AddScoped<IRealtimeSnapshotBuilder, RealtimeSnapshotBuilder>();
 builder.Services.AddScoped<IRealtimeSnapshotSyncService, RealtimeSnapshotSyncService>();
 builder.Services.AddSingleton<IProductionContextCache, ProductionContextCache>();

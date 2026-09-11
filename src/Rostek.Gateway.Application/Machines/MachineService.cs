@@ -49,6 +49,14 @@ public sealed class MachineService(
             Description = machine.Description
         };
 
+        if (machine.Connection is not null)
+        {
+            input.OeeTimeSource = ConfigurationJson.GetStringOption(
+                machine.Connection.OptionsJson,
+                OeeTimeSources.OptionName,
+                OeeTimeSources.DeviceCounters);
+        }
+
         if (machine.Connection?.Protocol == GatewayProtocol.OpcUa)
         {
             input.OpcUa.EndpointUrl = machine.Connection.EndpointUrl;
@@ -98,6 +106,11 @@ public sealed class MachineService(
             return GatewayResult<Guid>.Fail($"Machine code '{code}' already exists.");
         }
 
+        if (!OeeTimeSources.IsValid(input.OeeTimeSource))
+        {
+            return GatewayResult<Guid>.Fail("OEE time source must be device_counters, gateway_state, or auto.");
+        }
+
         var now = DateTimeOffset.UtcNow;
         Machine machine;
         if (input.Id is Guid id)
@@ -121,7 +134,14 @@ public sealed class MachineService(
 
         var connection = machine.Connection ?? new MachineConnection { Machine = machine, CreatedAtUtc = now };
         connection.UpdatedAtUtc = now;
-        ApplyConnectionInput(connection, template.Protocol, input);
+        try
+        {
+            ApplyConnectionInput(connection, template.Protocol, input);
+        }
+        catch (Exception exception) when (exception is System.Text.Json.JsonException or InvalidOperationException)
+        {
+            return GatewayResult<Guid>.Fail($"Connection options JSON is invalid: {exception.Message}");
+        }
         machine.Connection = connection;
         if (connection.Id == Guid.Empty)
         {
@@ -230,7 +250,10 @@ public sealed class MachineService(
             connection.Host = null;
             connection.Port = null;
             connection.UnitId = null;
-            connection.OptionsJson = null;
+            connection.OptionsJson = ConfigurationJson.SetStringOption(
+                connection.OptionsJson,
+                OeeTimeSources.OptionName,
+                input.OeeTimeSource);
         }
         else
         {
@@ -241,7 +264,10 @@ public sealed class MachineService(
             connection.RequestTimeoutMs = input.ModbusTcp.RequestTimeoutMs;
             connection.RetryCount = input.ModbusTcp.RetryCount;
             connection.PollingIntervalMs = input.ModbusTcp.PollingIntervalMs;
-            connection.OptionsJson = NullIfWhiteSpace(input.ModbusTcp.OptionsJson);
+            connection.OptionsJson = ConfigurationJson.SetStringOption(
+                NullIfWhiteSpace(input.ModbusTcp.OptionsJson),
+                OeeTimeSources.OptionName,
+                input.OeeTimeSource);
             connection.EndpointUrl = null;
             connection.SecurityMode = null;
             connection.SecurityPolicy = null;

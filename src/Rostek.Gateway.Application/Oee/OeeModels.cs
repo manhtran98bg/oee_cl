@@ -79,3 +79,22 @@ public interface IRawDataCaptureService
         bool requireProductionContext,
         CancellationToken cancellationToken);
 }
+
+public sealed record GatewayOeeTimerTotals(
+    long RunTimeTotalSec,
+    long StopTimeTotalSec,
+    long ErrorTimeTotalSec);
+
+public interface IGatewayOeeTimerService
+{
+    Task<GatewayOeeTimerTotals> CalculateAsync(
+        string machineCode,
+        string runState,
+        long readAt,
+        long maxElapsedSeconds,
+        Func<CancellationToken, Task<PlcRawInterval?>> loadLatestRawAsync,
+        CancellationToken cancellationToken);
+
+    void Reset(string machineCode);
+    void LogAutoFallbackOnce(string machineCode);
+}

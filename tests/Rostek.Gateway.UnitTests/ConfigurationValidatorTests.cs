@@ -68,12 +68,25 @@ public sealed class ConfigurationValidatorTests
         Assert.Contains(result.Issues, issue => issue.Code == "MODBUS_SIGNAL_ADDRESS_RANGE_INVALID");
     }
 
+    [Fact]
+    public async Task Oee_time_source_must_use_supported_value()
+    {
+        var configuration = CreateConfiguration(oeeTimeSource: "unknown");
+        var validator = new ConfigurationValidator(Options.Create(new RuntimeOptions()));
+
+        var result = await validator.ValidateAsync(configuration, CancellationToken.None);
+
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Issues, issue => issue.Code == "OEE_TIME_SOURCE_INVALID");
+    }
+
     private static RuntimeConfiguration CreateConfiguration(
         string endpointUrl = "opc.tcp://127.0.0.1:4840",
         bool signalEnabled = true,
         bool signalRequired = true,
         string sourceAddress = "ns=2;s=Machine.State",
-        string securityMode = "NONE")
+        string securityMode = "NONE",
+        string? oeeTimeSource = null)
     {
         var machine = new EffectiveMachineConfiguration(
             Guid.NewGuid(),
@@ -81,7 +94,23 @@ public sealed class ConfigurationValidatorTests
             "Machine 01",
             "OPCUA",
             true,
-            new EffectiveConnectionConfiguration("OPCUA", null, null, endpointUrl, null, securityMode, "None", "ANONYMOUS", null, 3000, 3000, 3, 1000, null),
+            new EffectiveConnectionConfiguration(
+                "OPCUA",
+                null,
+                null,
+                endpointUrl,
+                null,
+                securityMode,
+                "None",
+                "ANONYMOUS",
+                null,
+                3000,
+                3000,
+                3,
+                1000,
+                oeeTimeSource is null
+                    ? null
+                    : new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase) { ["oee_time_source"] = oeeTimeSource }),
             [
                 new EffectiveSignalConfiguration("machine_state", sourceAddress, "INT16", 1000, 1, 0, signalRequired, signalEnabled, null, null)
             ]);

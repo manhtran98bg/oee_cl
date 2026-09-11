@@ -12,7 +12,15 @@
     <div class="col-md-3"><label class="form-label">Template</label><select asp-for="Input.TemplateId" asp-items="Model.TemplateOptions" class="form-select"></select></div>
     <div class="col-md-1 form-check mt-5"><input asp-for="Input.Enabled" class="form-check-input" /><label class="form-check-label">Enabled</label></div>
     <div class="col-md-2"><label class="form-label">Order</label><input asp-for="Input.DisplayOrder" class="form-control" /></div>
-    <div class="col-md-10"><label class="form-label">Description</label><input asp-for="Input.Description" class="form-control" /></div>
+    <div class="col-md-3">
+        <label class="form-label">OEE Time Source</label>
+        <select asp-for="Input.OeeTimeSource" class="form-select">
+            <option value="device_counters">Device counters</option>
+            <option value="gateway_state">Gateway from machine state</option>
+            <option value="auto">Auto</option>
+        </select>
+    </div>
+    <div class="col-md-7"><label class="form-label">Description</label><input asp-for="Input.Description" class="form-control" /></div>
     <div class="col-12"><h2 class="h5">OPC UA Connection</h2></div>
     <div class="col-md-5"><label class="form-label">Endpoint URL</label><input asp-for="Input.OpcUa.EndpointUrl" class="form-control" /></div>
     <div class="col-md-2"><label class="form-label">Security Mode</label><input asp-for="Input.OpcUa.SecurityMode" class="form-control" /></div>

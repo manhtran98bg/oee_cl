@@ -1,7 +1,9 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using Rostek.Gateway.Application.Oee;
+using Rostek.Gateway.Contracts.Configuration;
 using Rostek.Gateway.Contracts.Machines;
 using Rostek.Gateway.Contracts.Runtime;
+using Rostek.Gateway.Domain.Entities;
 using Rostek.Gateway.UnitTests.Support;
 using Xunit;
 
@@ -81,11 +83,117 @@ public sealed class RawDataCaptureServiceTests
         Assert.Single(repository.RawIntervals);
     }
 
+    [Fact]
+    public async Task Capture_gateway_state_counts_elapsed_seconds_for_current_state()
+    {
+        var reader = new MutableMachineValueReader();
+        var repository = new InMemoryOeeLocalRepository();
+        var service = CreateService(reader, repository, timeSource: OeeTimeSources.GatewayState);
+
+        reader.SetSnapshots([CreateSnapshot("M16-01", DateTimeOffset.FromUnixTimeSeconds(10), machineState: 1)]);
+        var first = await service.CaptureAsync(TimeSpan.FromSeconds(5), false, CancellationToken.None);
+        reader.SetSnapshots([CreateSnapshot("M16-01", DateTimeOffset.FromUnixTimeSeconds(15), machineState: 1)]);
+        var second = await service.CaptureAsync(TimeSpan.FromSeconds(5), false, CancellationToken.None);
+        reader.SetSnapshots([CreateSnapshot("M16-01", DateTimeOffset.FromUnixTimeSeconds(20), machineState: 2)]);
+        var third = await service.CaptureAsync(TimeSpan.FromSeconds(5), false, CancellationToken.None);
+
+        Assert.Equal(0, Assert.Single(first).RunTimeTotalSec);
+        Assert.Equal(5, Assert.Single(second).RunTimeTotalSec);
+        Assert.Equal(5, Assert.Single(third).RunTimeTotalSec);
+        Assert.Equal(5, Assert.Single(third).StopTimeTotalSec);
+    }
+
+    [Fact]
+    public async Task Capture_gateway_state_seeds_from_database_without_counting_offline_gap()
+    {
+        var reader = new MutableMachineValueReader();
+        var repository = new InMemoryOeeLocalRepository();
+        await repository.InsertMissingRawIntervalsAsync([
+            new PlcRawInterval
+            {
+                Machine = "M16-01",
+                ReadAt = 10,
+                RunState = OeeRunStates.Run,
+                RunTimeTotalSec = 100,
+                StopTimeTotalSec = 20,
+                ErrorTimeTotalSec = 5
+            }
+        ], CancellationToken.None);
+        var service = CreateService(reader, repository, timeSource: OeeTimeSources.GatewayState);
+        reader.SetSnapshots([CreateSnapshot("M16-01", DateTimeOffset.FromUnixTimeSeconds(100), machineState: 1)]);
+
+        var inserted = await service.CaptureAsync(TimeSpan.FromSeconds(5), false, CancellationToken.None);
+
+        var raw = Assert.Single(inserted);
+        Assert.Equal(100, raw.RunTimeTotalSec);
+        Assert.Equal(20, raw.StopTimeTotalSec);
+        Assert.Equal(5, raw.ErrorTimeTotalSec);
+    }
+
+    [Fact]
+    public async Task Capture_gateway_state_caps_large_gap_to_three_intervals()
+    {
+        var reader = new MutableMachineValueReader();
+        var repository = new InMemoryOeeLocalRepository();
+        var service = CreateService(reader, repository, timeSource: OeeTimeSources.GatewayState);
+        reader.SetSnapshots([CreateSnapshot("M16-01", DateTimeOffset.FromUnixTimeSeconds(10), machineState: 3)]);
+        await service.CaptureAsync(TimeSpan.FromSeconds(5), false, CancellationToken.None);
+        reader.SetSnapshots([CreateSnapshot("M16-01", DateTimeOffset.FromUnixTimeSeconds(100), machineState: 3)]);
+
+        var inserted = await service.CaptureAsync(TimeSpan.FromSeconds(5), false, CancellationToken.None);
+
+        Assert.Equal(15, Assert.Single(inserted).ErrorTimeTotalSec);
+    }
+
+    [Fact]
+    public async Task Capture_auto_uses_device_counters_when_all_timer_signals_exist()
+    {
+        var reader = new MutableMachineValueReader();
+        var repository = new InMemoryOeeLocalRepository();
+        var service = CreateService(reader, repository, timeSource: OeeTimeSources.Auto);
+        reader.SetSnapshots([CreateSnapshot(
+            "M16-01",
+            DateTimeOffset.FromUnixTimeSeconds(10),
+            machineState: 1,
+            runTimeTotal: 21,
+            stopTimeTotal: 8,
+            errorTimeTotal: 3)]);
+
+        var inserted = await service.CaptureAsync(TimeSpan.FromSeconds(5), false, CancellationToken.None);
+
+        var raw = Assert.Single(inserted);
+        Assert.Equal(21, raw.RunTimeTotalSec);
+        Assert.Equal(8, raw.StopTimeTotalSec);
+        Assert.Equal(3, raw.ErrorTimeTotalSec);
+    }
+
+    [Fact]
+    public async Task Capture_auto_falls_back_to_gateway_when_a_timer_signal_is_missing()
+    {
+        var reader = new MutableMachineValueReader();
+        var repository = new InMemoryOeeLocalRepository();
+        var service = CreateService(reader, repository, timeSource: OeeTimeSources.Auto);
+        reader.SetSnapshots([CreateSnapshot("M16-01", DateTimeOffset.FromUnixTimeSeconds(10), machineState: 1, runTimeTotal: 50)]);
+        await service.CaptureAsync(TimeSpan.FromSeconds(5), false, CancellationToken.None);
+        reader.SetSnapshots([CreateSnapshot("M16-01", DateTimeOffset.FromUnixTimeSeconds(15), machineState: 1, runTimeTotal: 55)]);
+
+        var inserted = await service.CaptureAsync(TimeSpan.FromSeconds(5), false, CancellationToken.None);
+
+        Assert.Equal(5, Assert.Single(inserted).RunTimeTotalSec);
+    }
+
     private static RawDataCaptureService CreateService(
         MutableMachineValueReader reader,
         InMemoryOeeLocalRepository repository,
-        ProductionContextCache? cache = null) =>
-        new(reader, repository, cache ?? new ProductionContextCache(), NullLogger<RawDataCaptureService>.Instance);
+        ProductionContextCache? cache = null,
+        string timeSource = OeeTimeSources.DeviceCounters) =>
+        new(
+            reader,
+            new StaticRuntimeConfigurationProvider(timeSource),
+            repository,
+            cache ?? new ProductionContextCache(),
+            new GatewayOeeTimerService(NullLogger<GatewayOeeTimerService>.Instance),
+            NullLogger<RawDataCaptureService>.Instance);
 
     private static MachineValueSnapshotDto CreateSnapshot(
         string machineCode,
@@ -131,5 +239,53 @@ public sealed class RawDataCaptureServiceTests
 
         public MachineValueSnapshotDto? GetSnapshot(string machineCode) =>
             _snapshots.FirstOrDefault(snapshot => snapshot.MachineCode.Equals(machineCode, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private sealed class StaticRuntimeConfigurationProvider : IRuntimeConfigurationProvider
+    {
+        public StaticRuntimeConfigurationProvider(string timeSource)
+        {
+            var connection = new EffectiveConnectionConfiguration(
+                "OPCUA",
+                null,
+                null,
+                "opc.tcp://localhost:4840",
+                null,
+                "NONE",
+                "None",
+                "ANONYMOUS",
+                null,
+                3000,
+                3000,
+                3,
+                1000,
+                new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
+                {
+                    [OeeTimeSources.OptionName] = timeSource
+                });
+            var machine = new EffectiveMachineConfiguration(
+                Guid.NewGuid(),
+                "M16-01",
+                "Machine 16",
+                "OPCUA",
+                true,
+                connection,
+                []);
+            Current = new RuntimeConfiguration(
+                1,
+                DateTimeOffset.UtcNow,
+                new Dictionary<string, EffectiveMachineConfiguration>(StringComparer.OrdinalIgnoreCase)
+                {
+                    [machine.MachineCode] = machine
+                });
+        }
+
+        public RuntimeConfiguration Current { get; private set; }
+
+        public Task ReplaceAsync(RuntimeConfiguration configuration, CancellationToken cancellationToken)
+        {
+            Current = configuration;
+            return Task.CompletedTask;
+        }
     }
 }

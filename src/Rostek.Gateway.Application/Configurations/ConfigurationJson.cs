@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Nodes;
 using Rostek.Gateway.Contracts.Configuration;
 
 namespace Rostek.Gateway.Application.Configurations;
@@ -60,6 +61,30 @@ internal static class ConfigurationJson
         return document.RootElement.EnumerateObject()
             .Where(property => !IsSecretName(property.Name))
             .ToDictionary(property => property.Name, property => ToObject(property.Value), StringComparer.OrdinalIgnoreCase);
+    }
+
+    public static string GetStringOption(string? json, string optionName, string defaultValue)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return defaultValue;
+        }
+
+        var root = JsonNode.Parse(json) as JsonObject
+            ?? throw new InvalidOperationException("Options JSON must be an object.");
+        return root[optionName] is JsonValue jsonValue && jsonValue.TryGetValue<string>(out var value)
+            ? value.Trim()
+            : defaultValue;
+    }
+
+    public static string SetStringOption(string? json, string optionName, string value)
+    {
+        var root = string.IsNullOrWhiteSpace(json)
+            ? new JsonObject()
+            : JsonNode.Parse(json) as JsonObject
+              ?? throw new InvalidOperationException("Options JSON must be an object.");
+        root[optionName] = value;
+        return root.ToJsonString(new JsonSerializerOptions { WriteIndented = false });
     }
 
     public static IReadOnlyDictionary<string, string>? ParseStringMap(string? json)

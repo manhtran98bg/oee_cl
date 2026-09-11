@@ -128,6 +128,12 @@ public sealed class InMemoryOeeLocalRepository : IOeeLocalRepository
         return Task.CompletedTask;
     }
 
+    public Task<PlcRawInterval?> GetLatestRawIntervalAsync(string machine, CancellationToken cancellationToken) =>
+        Task.FromResult(RawIntervals
+            .Where(item => item.Machine.Equals(machine, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(item => item.ReadAt)
+            .FirstOrDefault());
+
     public Task<IReadOnlyList<PlcRawInterval>> InsertMissingRawIntervalsAsync(IReadOnlyCollection<PlcRawInterval> rawIntervals, CancellationToken cancellationToken)
     {
         var inserted = rawIntervals

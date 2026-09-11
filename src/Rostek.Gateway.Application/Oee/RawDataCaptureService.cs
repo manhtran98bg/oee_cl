@@ -1,5 +1,6 @@
 using System.Globalization;
 using Microsoft.Extensions.Logging;
+using Rostek.Gateway.Contracts.Configuration;
 using Rostek.Gateway.Contracts.Machines;
 using Rostek.Gateway.Contracts.Runtime;
 using Rostek.Gateway.Domain.Entities;
@@ -8,8 +9,10 @@ namespace Rostek.Gateway.Application.Oee;
 
 public sealed class RawDataCaptureService(
     IMachineValueReader valueReader,
+    IRuntimeConfigurationProvider runtimeConfigurationProvider,
     IOeeLocalRepository repository,
     IProductionContextCache productionContextCache,
+    IGatewayOeeTimerService gatewayTimerService,
     ILogger<RawDataCaptureService> logger) : IRawDataCaptureService
 {
     public async Task<IReadOnlyList<PlcRawInterval>> CaptureAsync(
@@ -83,20 +86,70 @@ public sealed class RawDataCaptureService(
                 group => group.OrderByDescending(value => value.TimestampUtc).First(),
                 StringComparer.OrdinalIgnoreCase);
 
+        var runState = ReadRunState(signals);
+        var deviceRunTime = ReadInt64(signals, OeeSignalCodes.RunTimeTotal);
+        var deviceStopTime = ReadInt64(signals, OeeSignalCodes.StopTimeTotal);
+        var deviceErrorTime = ReadInt64(signals, OeeSignalCodes.ErrorTimeTotal);
+        var timeSource = GetTimeSource(snapshot.MachineCode);
+        var useGatewayTimer = timeSource == OeeTimeSources.GatewayState ||
+                              timeSource == OeeTimeSources.Auto &&
+                              (deviceRunTime is null || deviceStopTime is null || deviceErrorTime is null);
+
+        GatewayOeeTimerTotals? gatewayTotals = null;
+        if (useGatewayTimer)
+        {
+            if (timeSource == OeeTimeSources.Auto)
+            {
+                gatewayTimerService.LogAutoFallbackOnce(snapshot.MachineCode);
+            }
+
+            gatewayTotals = await gatewayTimerService.CalculateAsync(
+                snapshot.MachineCode,
+                runState,
+                readAt,
+                intervalSeconds * 3,
+                token => repository.GetLatestRawIntervalAsync(snapshot.MachineCode, token),
+                cancellationToken);
+        }
+        else
+        {
+            gatewayTimerService.Reset(snapshot.MachineCode);
+        }
+
         return new PlcRawInterval
         {
             Machine = snapshot.MachineCode,
             ReadAt = readAt,
             PlcPeriodIndex = primaryContext.CurrentPlcPeriodIndex,
-            RunState = ReadRunState(signals),
+            RunState = runState,
             ShotOkTotal = ReadInt64(signals, OeeSignalCodes.ShotOkCount) ?? 0,
             ShotNgTotal = ReadInt64(signals, OeeSignalCodes.ShotNgCount) ?? 0,
-            RunTimeTotalSec = ReadInt64(signals, OeeSignalCodes.RunTimeTotal) ?? 0,
-            StopTimeTotalSec = ReadInt64(signals, OeeSignalCodes.StopTimeTotal) ?? 0,
-            ErrorTimeTotalSec = ReadInt64(signals, OeeSignalCodes.ErrorTimeTotal) ?? 0,
+            RunTimeTotalSec = gatewayTotals?.RunTimeTotalSec ?? deviceRunTime ?? 0,
+            StopTimeTotalSec = gatewayTotals?.StopTimeTotalSec ?? deviceStopTime ?? 0,
+            ErrorTimeTotalSec = gatewayTotals?.ErrorTimeTotalSec ?? deviceErrorTime ?? 0,
             CycleTimeMs = ReadInt32(signals, OeeSignalCodes.CycleTimeMs) ?? 0,
             PeriodActive = 1
         };
+    }
+
+    private string GetTimeSource(string machineCode)
+    {
+        if (!runtimeConfigurationProvider.Current.Machines.TryGetValue(machineCode, out var machine))
+        {
+            return OeeTimeSources.DeviceCounters;
+        }
+
+        var configured = OeeTimeSources.FromOptions(machine.Connection.Options);
+        if (OeeTimeSources.IsValid(configured))
+        {
+            return configured;
+        }
+
+        logger.LogWarning(
+            "Machine {MachineCode} has invalid OEE time source {OeeTimeSource}; device counters will be used",
+            machineCode,
+            configured);
+        return OeeTimeSources.DeviceCounters;
     }
 
     private static string ReadRunState(IReadOnlyDictionary<string, SignalValueDto> signals)

@@ -148,6 +148,13 @@ public sealed class EfCoreOeeLocalRepository(OeeDbContext dbContext) : IOeeLocal
         await dbContext.SaveChangesAsync(cancellationToken);
     }
 
+    public Task<PlcRawInterval?> GetLatestRawIntervalAsync(string machine, CancellationToken cancellationToken) =>
+        dbContext.PlcRawIntervals
+            .AsNoTracking()
+            .Where(item => item.Machine.ToUpper() == machine.ToUpper())
+            .OrderByDescending(item => item.ReadAt)
+            .FirstOrDefaultAsync(cancellationToken);
+
     public async Task<IReadOnlyList<PlcRawInterval>> InsertMissingRawIntervalsAsync(IReadOnlyCollection<PlcRawInterval> rawIntervals, CancellationToken cancellationToken)
     {
         var inserted = new List<PlcRawInterval>();

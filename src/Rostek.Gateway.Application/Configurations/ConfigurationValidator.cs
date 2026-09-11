@@ -41,6 +41,12 @@ public sealed class ConfigurationValidator(IOptions<RuntimeOptions> runtimeOptio
 
     private void ValidateConnection(EffectiveMachineConfiguration machine, List<ConfigurationValidationIssue> issues)
     {
+        var oeeTimeSource = OeeTimeSources.FromOptions(machine.Connection.Options);
+        if (!OeeTimeSources.IsValid(oeeTimeSource))
+        {
+            AddError(issues, "OEE_TIME_SOURCE_INVALID", "OEE time source must be device_counters, gateway_state, or auto.", machine.MachineCode, null, OeeTimeSources.OptionName);
+        }
+
         if (machine.Connection.ConnectTimeoutMs <= 0 || machine.Connection.RequestTimeoutMs <= 0)
         {
             AddError(issues, "TIMEOUT_INVALID", "Timeout must be greater than zero.", machine.MachineCode, null, "Timeout");

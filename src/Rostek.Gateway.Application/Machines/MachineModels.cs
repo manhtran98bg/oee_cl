@@ -29,6 +29,7 @@ public sealed class MachineEditInput
     public Guid? GroupId { get; set; }
     public Guid TemplateId { get; set; }
     public bool Enabled { get; set; } = true;
+    public string OeeTimeSource { get; set; } = OeeTimeSources.DeviceCounters;
     public int DisplayOrder { get; set; }
     public string? Description { get; set; }
     public OpcUaConnectionInput OpcUa { get; set; } = new();

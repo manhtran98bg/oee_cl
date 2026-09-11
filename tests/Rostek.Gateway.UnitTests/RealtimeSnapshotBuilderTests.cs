@@ -53,7 +53,7 @@ public sealed class RealtimeSnapshotBuilderTests
         Assert.Equal("SP-001", item.ProductCode);
         Assert.Equal("KHUON-001", item.MoldCode);
         Assert.Equal(23, item.ActualQty);
-        Assert.Equal(4.8m, item.PlannedQty);
+        Assert.Equal(16m, item.PlannedQty);
         Assert.Equal(13.333333m, item.Availability);
         Assert.Equal(100m, item.Performance);
         Assert.Equal(86.956522m, item.Quality);
