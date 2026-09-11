@@ -174,6 +174,7 @@ public sealed class RawDataCaptureService(
         var numeric = ReadInt64(signals, OeeSignalCodes.MachineState);
         return numeric switch
         {
+            0 => OeeRunStates.Stop,
             1 => OeeRunStates.Run,
             2 => OeeRunStates.Stop,
             3 => OeeRunStates.Error,

@@ -83,6 +83,23 @@ public sealed class RawDataCaptureServiceTests
         Assert.Single(repository.RawIntervals);
     }
 
+    [Theory]
+    [InlineData(0, OeeRunStates.Stop)]
+    [InlineData(1, OeeRunStates.Run)]
+    [InlineData(2, OeeRunStates.Stop)]
+    [InlineData(3, OeeRunStates.Error)]
+    public async Task Capture_maps_numeric_machine_state(int machineState, string expectedRunState)
+    {
+        var reader = new MutableMachineValueReader();
+        var repository = new InMemoryOeeLocalRepository();
+        var service = CreateService(reader, repository);
+        reader.SetSnapshots([CreateSnapshot("M16-01", DateTimeOffset.FromUnixTimeSeconds(10), machineState: machineState)]);
+
+        var inserted = await service.CaptureAsync(TimeSpan.FromSeconds(5), false, CancellationToken.None);
+
+        Assert.Equal(expectedRunState, Assert.Single(inserted).RunState);
+    }
+
     [Fact]
     public async Task Capture_gateway_state_counts_elapsed_seconds_for_current_state()
     {
