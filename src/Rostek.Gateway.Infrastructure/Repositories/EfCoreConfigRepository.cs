@@ -134,6 +134,8 @@ public sealed class EfCoreConfigRepository(GatewayDbContext dbContext) : IConfig
     public Task AddMachineAsync(Machine machine, CancellationToken cancellationToken) =>
         dbContext.Machines.AddAsync(machine, cancellationToken).AsTask();
 
+    public void RemoveMachine(Machine machine) => dbContext.Machines.Remove(machine);
+
     public Task AddConnectionAsync(MachineConnection connection, CancellationToken cancellationToken) =>
         dbContext.MachineConnections.AddAsync(connection, cancellationToken).AsTask();
 

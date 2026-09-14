@@ -12,6 +12,7 @@ public interface IMachineService
     Task<GatewayResult<Guid>> SaveAsync(MachineEditInput input, string? userName, CancellationToken cancellationToken);
     Task<GatewayResult<Guid>> CloneAsync(Guid id, string newCode, string? userName, CancellationToken cancellationToken);
     Task<GatewayResult> SetEnabledAsync(Guid id, bool enabled, string? userName, CancellationToken cancellationToken);
+    Task<GatewayResult> DeleteAsync(Guid id, string? userName, CancellationToken cancellationToken);
     Task<RuntimeConfiguration?> PreviewEffectiveAsync(Guid machineId, CancellationToken cancellationToken);
 }
 
@@ -26,6 +27,10 @@ public sealed class MachineEditInput
     public Guid? Id { get; set; }
     public string Code { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;
+    public string? Model { get; set; }
+    public string? Serial { get; set; }
+    public string? Manufacturer { get; set; }
+    public string? Location { get; set; }
     public Guid? GroupId { get; set; }
     public Guid TemplateId { get; set; }
     public bool Enabled { get; set; } = true;
@@ -63,6 +68,10 @@ public sealed record MachineListItem(
     Guid Id,
     string Code,
     string Name,
+    string? Model,
+    string? Serial,
+    string? Manufacturer,
+    string? Location,
     string? GroupCode,
     string TemplateCode,
     GatewayProtocol Protocol,

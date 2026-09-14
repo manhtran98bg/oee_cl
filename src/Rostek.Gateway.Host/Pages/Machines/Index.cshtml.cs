@@ -16,4 +16,10 @@ public sealed class IndexModel(IMachineService service) : PageModel
     {
         Machines = await service.ListAsync(new MachineQuery(Search, null, null, null, null, 1, 50), cancellationToken);
     }
+
+    public async Task<IActionResult> OnPostDeleteAsync(Guid id, CancellationToken cancellationToken)
+    {
+        await service.DeleteAsync(id, User.Identity?.Name, cancellationToken);
+        return RedirectToPage(new { search = Search });
+    }
 }

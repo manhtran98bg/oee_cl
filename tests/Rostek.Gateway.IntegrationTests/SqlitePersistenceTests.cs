@@ -1,11 +1,15 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
+using Rostek.Gateway.Application.Machines;
 using Rostek.Gateway.Application.Oee;
 using Rostek.Gateway.Domain.Entities;
 using Rostek.Gateway.Domain.Enums;
 using Rostek.Gateway.Infrastructure.Oee;
 using Rostek.Gateway.Infrastructure.Persistence;
+using Rostek.Gateway.Infrastructure.Repositories;
 using Xunit;
+using GatewayConfigurationBuilder = Rostek.Gateway.Application.Configurations.ConfigurationBuilder;
 
 namespace Rostek.Gateway.IntegrationTests;
 
@@ -67,6 +71,10 @@ public sealed class SqlitePersistenceTests
         Assert.DoesNotContain("sync_outbox", tableNames);
         Assert.Contains("Machines", tableNames);
         Assert.Contains("TemplateSignals", tableNames);
+        Assert.Contains("Model", await ReadColumnNamesAsync(connection, "Machines"));
+        Assert.Contains("Serial", await ReadColumnNamesAsync(connection, "Machines"));
+        Assert.Contains("Manufacturer", await ReadColumnNamesAsync(connection, "Machines"));
+        Assert.Contains("Location", await ReadColumnNamesAsync(connection, "Machines"));
     }
 
     [Fact]
@@ -104,6 +112,19 @@ public sealed class SqlitePersistenceTests
                 Status TEXT not null
             );
 
+            create table Machines (
+                Id TEXT not null primary key,
+                Code TEXT not null,
+                Name TEXT not null,
+                GroupId TEXT null,
+                TemplateId TEXT not null,
+                Enabled INTEGER not null,
+                DisplayOrder INTEGER not null,
+                Description TEXT null,
+                CreatedAtUtc TEXT not null,
+                UpdatedAtUtc TEXT not null
+            );
+
             create table production_context (
                 machine TEXT not null primary key
             );
@@ -119,6 +140,10 @@ public sealed class SqlitePersistenceTests
         Assert.Contains(
             "202609070006_RemoveOeeTablesFromConfigDb",
             await ReadAppliedMigrationIdsAsync(connection));
+        Assert.Contains(
+            "202609140001_AddMachineMesMetadata",
+            await ReadAppliedMigrationIdsAsync(connection));
+        Assert.Contains("Model", await ReadColumnNamesAsync(connection, "Machines"));
     }
 
     [Fact]
@@ -174,6 +199,72 @@ public sealed class SqlitePersistenceTests
         await Assert.ThrowsAnyAsync<DbUpdateException>(() => db.SaveChangesAsync());
     }
 
+    [Fact]
+    public async Task Machine_service_saves_and_loads_mes_metadata()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        await using var db = CreateContext(connection);
+        await db.Database.EnsureCreatedAsync();
+        var repository = new EfCoreConfigRepository(db);
+        var service = new MachineService(
+            repository,
+            new GatewayConfigurationBuilder(repository),
+            NullLogger<MachineService>.Instance);
+        var template = new MachineTemplate { Code = "TPL-MODBUS", Name = "Template Modbus", Protocol = GatewayProtocol.ModbusTcp };
+        await db.MachineTemplates.AddAsync(template);
+        await db.SaveChangesAsync();
+
+        var save = await service.SaveAsync(
+            new MachineEditInput
+            {
+                Code = "2-10",
+                Name = "Machine 2-10",
+                Model = "J350ADS-890H",
+                Serial = "SN-001",
+                Manufacturer = "JSW",
+                Location = "Line 2",
+                TemplateId = template.Id
+            },
+            null,
+            CancellationToken.None);
+        var input = await service.GetInputAsync(save.Value, CancellationToken.None);
+
+        Assert.True(save.Succeeded);
+        Assert.NotNull(input);
+        Assert.Equal("J350ADS-890H", input!.Model);
+        Assert.Equal("SN-001", input.Serial);
+        Assert.Equal("JSW", input.Manufacturer);
+        Assert.Equal("Line 2", input.Location);
+    }
+
+    [Fact]
+    public async Task Machine_service_deletes_machine_from_draft_configuration()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        await using var db = CreateContext(connection);
+        await db.Database.EnsureCreatedAsync();
+        var repository = new EfCoreConfigRepository(db);
+        var service = new MachineService(
+            repository,
+            new GatewayConfigurationBuilder(repository),
+            NullLogger<MachineService>.Instance);
+        var template = new MachineTemplate { Code = "TPL-MODBUS", Name = "Template Modbus", Protocol = GatewayProtocol.ModbusTcp };
+        var machine = new Machine { Code = "2-10", Name = "Machine 2-10", TemplateId = template.Id };
+        await db.MachineTemplates.AddAsync(template);
+        await db.Machines.AddAsync(machine);
+        await db.SaveChangesAsync();
+
+        var result = await service.DeleteAsync(machine.Id, "tester", CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(0, await db.Machines.CountAsync());
+        var audit = await db.AuditLogs.SingleAsync();
+        Assert.Equal("Delete machine", audit.Action);
+        Assert.Equal(machine.Id.ToString(), audit.EntityId);
+    }
+
     private static GatewayDbContext CreateContext(SqliteConnection connection)
     {
         var options = new DbContextOptionsBuilder<GatewayDbContext>().UseSqlite(connection).Options;
@@ -212,6 +303,20 @@ public sealed class SqlitePersistenceTests
         }
 
         return ids;
+    }
+
+    private static async Task<HashSet<string>> ReadColumnNamesAsync(SqliteConnection connection, string tableName)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = $"pragma table_info({tableName})";
+        await using var reader = await command.ExecuteReaderAsync();
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        while (await reader.ReadAsync())
+        {
+            names.Add(reader.GetString(1));
+        }
+
+        return names;
     }
 
     private static async Task ExecuteAsync(SqliteConnection connection, string sql)

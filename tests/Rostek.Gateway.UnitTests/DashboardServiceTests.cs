@@ -118,7 +118,7 @@ public sealed class DashboardServiceTests
             new FakeMachineValueReader(snapshots));
 
     private static MachineListItem CreateMachine(string code, bool enabled) =>
-        new(Guid.NewGuid(), code, $"Machine {code}", null, "JSW-MODBUS", GatewayProtocol.ModbusTcp, "127.0.0.1:502", enabled);
+        new(Guid.NewGuid(), code, $"Machine {code}", null, null, null, null, null, "JSW-MODBUS", GatewayProtocol.ModbusTcp, "127.0.0.1:502", enabled);
 
     private sealed class FakeMachineService(IReadOnlyList<MachineListItem> machines) : IMachineService
     {
@@ -134,6 +134,9 @@ public sealed class DashboardServiceTests
             Task.FromResult(GatewayResult<Guid>.Ok(Guid.NewGuid()));
 
         public Task<GatewayResult> SetEnabledAsync(Guid id, bool enabled, string? userName, CancellationToken cancellationToken) =>
+            Task.FromResult(GatewayResult.Ok());
+
+        public Task<GatewayResult> DeleteAsync(Guid id, string? userName, CancellationToken cancellationToken) =>
             Task.FromResult(GatewayResult.Ok());
 
         public Task<RuntimeConfiguration?> PreviewEffectiveAsync(Guid machineId, CancellationToken cancellationToken) =>

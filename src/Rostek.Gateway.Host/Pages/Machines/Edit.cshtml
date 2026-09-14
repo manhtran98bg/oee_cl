@@ -6,8 +6,42 @@
 <h1 class="h3">Machine</h1>
 <form method="post" class="row g-3">
     <input asp-for="Input.Id" type="hidden" />
+    <div class="col-12">
+        <button class="btn btn-outline-primary" type="button" id="fetchMesMachinesButton">Fetch from MES</button>
+        <span class="small text-muted ms-2" id="mesMachineFetchStatus"></span>
+    </div>
+    <div class="col-12 d-none" id="mesMachinePicker">
+        <div class="border rounded p-3">
+            <div class="row g-2 align-items-center mb-3">
+                <div class="col-md-4">
+                    <input class="form-control" type="search" id="mesMachineSearch" placeholder="Search MES machines" />
+                </div>
+                <div class="col-md-8 small text-muted" id="mesMachineCount"></div>
+            </div>
+            <div class="table-responsive">
+                <table class="table table-sm table-hover align-middle mb-0">
+                    <thead>
+                    <tr>
+                        <th>Code</th>
+                        <th>Name</th>
+                        <th>Model</th>
+                        <th>Serial</th>
+                        <th>Manufacturer</th>
+                        <th>Location</th>
+                        <th></th>
+                    </tr>
+                    </thead>
+                    <tbody id="mesMachineRows"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
     <div class="col-md-2"><label class="form-label">Code</label><input asp-for="Input.Code" class="form-control" /></div>
     <div class="col-md-3"><label class="form-label">Name</label><input asp-for="Input.Name" class="form-control" /></div>
+    <div class="col-md-2"><label class="form-label">Model</label><input asp-for="Input.Model" class="form-control" readonly /></div>
+    <div class="col-md-2"><label class="form-label">Serial</label><input asp-for="Input.Serial" class="form-control" readonly /></div>
+    <div class="col-md-2"><label class="form-label">Manufacturer</label><input asp-for="Input.Manufacturer" class="form-control" readonly /></div>
+    <div class="col-md-1"><label class="form-label">Location</label><input asp-for="Input.Location" class="form-control" readonly /></div>
     <div class="col-md-3"><label class="form-label">Group</label><select asp-for="Input.GroupId" asp-items="Model.GroupOptions" class="form-select"><option value="">None</option></select></div>
     <div class="col-md-3"><label class="form-label">Template</label><select asp-for="Input.TemplateId" asp-items="Model.TemplateOptions" class="form-select"></select></div>
     <div class="col-md-1 form-check mt-5"><input asp-for="Input.Enabled" class="form-check-input" /><label class="form-check-label">Enabled</label></div>
@@ -20,7 +54,6 @@
             <option value="auto">Auto</option>
         </select>
     </div>
-    <div class="col-md-7"><label class="form-label">Description</label><input asp-for="Input.Description" class="form-control" /></div>
     <div class="col-12"><h2 class="h5">OPC UA Connection</h2></div>
     <div class="col-md-5"><label class="form-label">Endpoint URL</label><input asp-for="Input.OpcUa.EndpointUrl" class="form-control" /></div>
     <div class="col-md-2"><label class="form-label">Security Mode</label><input asp-for="Input.OpcUa.SecurityMode" class="form-control" /></div>
@@ -49,4 +82,138 @@
 {
     <h2 class="h5 mt-4">Effective Configuration Preview</h2>
     <pre class="bg-light p-3">@Model.EffectiveJson</pre>
+}
+
+@section Scripts {
+    <script>
+        (() => {
+            const fetchButton = document.getElementById('fetchMesMachinesButton');
+            const status = document.getElementById('mesMachineFetchStatus');
+            const picker = document.getElementById('mesMachinePicker');
+            const rows = document.getElementById('mesMachineRows');
+            const count = document.getElementById('mesMachineCount');
+            const search = document.getElementById('mesMachineSearch');
+            const isEditMode = Boolean(document.getElementById('Input_Id')?.value);
+            let machines = [];
+
+            if (fetchButton && isEditMode) {
+                fetchButton.textContent = 'Refresh from MES';
+            }
+
+            fetchButton?.addEventListener('click', async () => {
+                status.textContent = 'Fetching...';
+                fetchButton.disabled = true;
+                try {
+                    const response = await fetch('/api/v1/mes/equipment/molding-machines', {
+                        headers: { 'Accept': 'application/json' }
+                    });
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}`);
+                    }
+
+                    const payload = await response.json();
+                    machines = payload.items ?? [];
+                    if (isEditMode) {
+                        refreshCurrentMachineFromMes();
+                    } else {
+                        picker.classList.remove('d-none');
+                        status.textContent = 'MES machines loaded';
+                        renderMachines();
+                    }
+                } catch (error) {
+                    status.textContent = `Fetch failed: ${error.message}`;
+                } finally {
+                    fetchButton.disabled = false;
+                }
+            });
+
+            search?.addEventListener('input', renderMachines);
+
+            function renderMachines() {
+                const term = (search.value ?? '').trim().toLowerCase();
+                const visible = machines.filter(machine => {
+                    const haystack = [
+                        machine.code,
+                        machine.name,
+                        machine.model,
+                        machine.serial,
+                        machine.manufacturer,
+                        machine.location
+                    ].join(' ').toLowerCase();
+                    return haystack.includes(term);
+                });
+
+                count.textContent = `${visible.length} of ${machines.length} machines`;
+                rows.replaceChildren(...visible.map(createRow));
+            }
+
+            function refreshCurrentMachineFromMes() {
+                picker.classList.add('d-none');
+                const currentCode = document.getElementById('Input_Code')?.value?.trim().toLowerCase();
+                if (!currentCode) {
+                    status.textContent = 'Machine code is empty';
+                    return;
+                }
+
+                const machine = machines.find(item => (item.code ?? '').trim().toLowerCase() === currentCode);
+                if (!machine) {
+                    status.textContent = `MES machine not found for code ${document.getElementById('Input_Code')?.value ?? ''}`;
+                    return;
+                }
+
+                if (!machine.can_import) {
+                    status.textContent = machine.message ?? `MES machine ${machine.code} cannot be imported`;
+                    return;
+                }
+
+                pickMachine(machine);
+                status.textContent = `Refreshed ${machine.code} from MES`;
+            }
+
+            function createRow(machine) {
+                const tr = document.createElement('tr');
+                addCell(tr, machine.code);
+                addCell(tr, machine.name);
+                addCell(tr, machine.model);
+                addCell(tr, machine.serial);
+                addCell(tr, machine.manufacturer);
+                addCell(tr, machine.location);
+
+                const action = document.createElement('td');
+                action.className = 'text-end';
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'btn btn-sm btn-outline-primary';
+                button.textContent = machine.can_import ? 'Pick' : (machine.message ?? 'Missing code');
+                button.disabled = !machine.can_import;
+                button.addEventListener('click', () => pickMachine(machine));
+                action.appendChild(button);
+                tr.appendChild(action);
+                return tr;
+            }
+
+            function addCell(tr, value) {
+                const td = document.createElement('td');
+                td.textContent = value || '-';
+                tr.appendChild(td);
+            }
+
+            function pickMachine(machine) {
+                setValue('Input_Code', machine.code);
+                setValue('Input_Name', machine.name);
+                setValue('Input_Model', machine.model);
+                setValue('Input_Serial', machine.serial);
+                setValue('Input_Manufacturer', machine.manufacturer);
+                setValue('Input_Location', machine.location);
+                status.textContent = `Picked ${machine.code}`;
+            }
+
+            function setValue(id, value) {
+                const input = document.getElementById(id);
+                if (input) {
+                    input.value = value ?? '';
+                }
+            }
+        })();
+    </script>
 }

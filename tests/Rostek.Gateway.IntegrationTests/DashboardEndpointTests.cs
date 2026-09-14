@@ -3,6 +3,8 @@ using System.Net.Http.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Rostek.Gateway.Application.Common;
 using Rostek.Gateway.Application.MesSync;
 using Rostek.Gateway.Domain.Entities;
 using Rostek.Gateway.Domain.Enums;
@@ -93,6 +95,39 @@ public sealed class DashboardEndpointTests
         }
     }
 
+    [Fact]
+    public async Task Mes_equipment_endpoint_returns_molding_machine_catalog()
+    {
+        var previousGatewayHome = Environment.GetEnvironmentVariable("ROSTEK_GATEWAY_HOME");
+        Environment.SetEnvironmentVariable("ROSTEK_GATEWAY_HOME", CreateTempGatewayHome());
+
+        try
+        {
+            await using var factory = new WebApplicationFactory<Program>()
+                .WithWebHostBuilder(builder =>
+                {
+                    builder.ConfigureServices(services =>
+                    {
+                        services.RemoveAll<IMesEquipmentCatalogService>();
+                        services.AddScoped<IMesEquipmentCatalogService, StubMesEquipmentCatalogService>();
+                    });
+                });
+            using var client = factory.CreateClient();
+
+            var response = await client.GetAsync("/api/v1/mes/equipment/molding-machines");
+            var json = await response.Content.ReadAsStringAsync();
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Contains("\"items\"", json);
+            Assert.Contains("\"code\":\"1-1\"", json);
+            Assert.Contains("\"can_import\":true", json);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("ROSTEK_GATEWAY_HOME", previousGatewayHome);
+        }
+    }
+
     private static async Task SeedMachineAsync(WebApplicationFactory<Program> factory, string machineCode)
     {
         using var scope = factory.Services.CreateScope();
@@ -124,4 +159,13 @@ public sealed class DashboardEndpointTests
 
     private static string CreateTempGatewayHome() =>
         Path.Combine(Path.GetTempPath(), "ro-stek-gateway-tests", Guid.NewGuid().ToString("N"), ".gateway");
+
+    private sealed class StubMesEquipmentCatalogService : IMesEquipmentCatalogService
+    {
+        public Task<GatewayResult<IReadOnlyList<MesMoldingMachineListItem>>> FetchMoldingMachinesAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(GatewayResult<IReadOnlyList<MesMoldingMachineListItem>>.Ok(
+            [
+                new MesMoldingMachineListItem("1-1", "Machine 1-1", "J350", "SN-1", "JSW", "1", true, null)
+            ]));
+    }
 }

@@ -42,6 +42,10 @@ public sealed class GatewayDbContext(DbContextOptions<GatewayDbContext> options)
             entity.HasKey(machine => machine.Id);
             entity.Property(machine => machine.Code).HasMaxLength(100).IsRequired();
             entity.Property(machine => machine.Name).HasMaxLength(200).IsRequired();
+            entity.Property(machine => machine.Model).HasMaxLength(200);
+            entity.Property(machine => machine.Serial).HasMaxLength(200);
+            entity.Property(machine => machine.Manufacturer).HasMaxLength(200);
+            entity.Property(machine => machine.Location).HasMaxLength(200);
             entity.HasIndex(machine => machine.Code).IsUnique();
             entity.HasIndex(machine => machine.GroupId);
             entity.HasIndex(machine => machine.TemplateId);

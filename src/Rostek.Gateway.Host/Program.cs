@@ -54,6 +54,7 @@ builder.Services.AddScoped<IRealtimeSnapshotSyncService, RealtimeSnapshotSyncSer
 builder.Services.AddSingleton<IProductionContextCache, ProductionContextCache>();
 builder.Services.AddSingleton<IRealtimeSnapshotSyncStatusStore, RealtimeSnapshotSyncStatusStore>();
 builder.Services.AddScoped<IProductionCommandService, ProductionCommandService>();
+builder.Services.AddScoped<IMesEquipmentCatalogService, MesEquipmentCatalogService>();
 builder.Services.AddHostedService<MesSyncHostedService>();
 
 var gatewayOptions = builder.Configuration.GetSection("Gateway").Get<GatewayOptions>() ?? new GatewayOptions();
@@ -174,6 +175,12 @@ app.MapGet("/api/v1/machines/{machineCode}/runtime-status", (string machineCode,
 
 app.MapGet("/api/v1/machines/{machineCode}/values", (string machineCode, IMachineValueReader valueReader) =>
     valueReader.GetSnapshot(machineCode) is { } snapshot ? Results.Ok(snapshot) : Results.NotFound());
+
+app.MapGet("/api/v1/mes/equipment/molding-machines", async (IMesEquipmentCatalogService catalogService, CancellationToken cancellationToken) =>
+{
+    var result = await catalogService.FetchMoldingMachinesAsync(cancellationToken);
+    return result.Succeeded ? Results.Ok(new { items = result.Value }) : Results.Problem(result.ErrorMessage, statusCode: StatusCodes.Status502BadGateway);
+});
 
 app.MapPost("/api/v1/gateway/oee/production-commands", async (ProductionCommandBatchRequest request, IProductionCommandService commandService, CancellationToken cancellationToken) =>
 {

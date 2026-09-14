@@ -24,7 +24,14 @@
             <td>@machine.Protocol</td>
             <td>@machine.Endpoint</td>
             <td>@machine.Enabled</td>
-            <td><a asp-page="Edit" asp-route-id="@machine.Id">Edit</a></td>
+            <td class="text-end">
+                <a class="btn btn-link btn-sm" asp-page="Edit" asp-route-id="@machine.Id">Edit</a>
+                <form method="post" asp-page-handler="Delete" class="d-inline" onsubmit="return confirm('Delete machine @machine.Code from draft configuration?');">
+                    <input type="hidden" name="id" value="@machine.Id" />
+                    <input type="hidden" name="Search" value="@Model.Search" />
+                    <button class="btn btn-link btn-sm text-danger" type="submit">Delete</button>
+                </form>
+            </td>
         </tr>
     }
     </tbody>

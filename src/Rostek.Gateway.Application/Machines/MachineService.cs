@@ -20,6 +20,10 @@ public sealed class MachineService(
             machine.Id,
             machine.Code,
             machine.Name,
+            machine.Model,
+            machine.Serial,
+            machine.Manufacturer,
+            machine.Location,
             machine.Group?.Code,
             machine.Template?.Code ?? string.Empty,
             machine.Template?.Protocol ?? machine.Connection?.Protocol ?? GatewayProtocol.OpcUa,
@@ -42,6 +46,10 @@ public sealed class MachineService(
             Id = machine.Id,
             Code = machine.Code,
             Name = machine.Name,
+            Model = machine.Model,
+            Serial = machine.Serial,
+            Manufacturer = machine.Manufacturer,
+            Location = machine.Location,
             GroupId = machine.GroupId,
             TemplateId = machine.TemplateId,
             Enabled = machine.Enabled,
@@ -126,6 +134,10 @@ public sealed class MachineService(
 
         machine.Code = code;
         machine.Name = input.Name.Trim();
+        machine.Model = NullIfWhiteSpace(input.Model);
+        machine.Serial = NullIfWhiteSpace(input.Serial);
+        machine.Manufacturer = NullIfWhiteSpace(input.Manufacturer);
+        machine.Location = NullIfWhiteSpace(input.Location);
         machine.GroupId = input.GroupId;
         machine.TemplateId = input.TemplateId;
         machine.Enabled = input.Enabled;
@@ -218,6 +230,29 @@ public sealed class MachineService(
         }, cancellationToken);
         await repository.SaveChangesAsync(cancellationToken);
         logger.LogInformation("Set machine {MachineCode} ({MachineId}) enabled state to {Enabled}", machine.Code, machine.Id, enabled);
+        return GatewayResult.Ok();
+    }
+
+    public async Task<GatewayResult> DeleteAsync(Guid id, string? userName, CancellationToken cancellationToken)
+    {
+        var machine = await repository.GetMachineAsync(id, includeDetails: true, cancellationToken);
+        if (machine is null)
+        {
+            return GatewayResult.Fail("Machine not found.");
+        }
+
+        var machineCode = machine.Code;
+        repository.RemoveMachine(machine);
+        await repository.AddAuditLogAsync(new AuditLog
+        {
+            UserName = userName,
+            Action = "Delete machine",
+            EntityType = nameof(Machine),
+            EntityId = machine.Id.ToString(),
+            CreatedAtUtc = DateTimeOffset.UtcNow
+        }, cancellationToken);
+        await repository.SaveChangesAsync(cancellationToken);
+        logger.LogInformation("Deleted machine {MachineCode} ({MachineId}) from draft configuration", machineCode, id);
         return GatewayResult.Ok();
     }
 

@@ -5,6 +5,10 @@ public sealed class Machine
     public Guid Id { get; set; } = Guid.NewGuid();
     public string Code { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;
+    public string? Model { get; set; }
+    public string? Serial { get; set; }
+    public string? Manufacturer { get; set; }
+    public string? Location { get; set; }
     public Guid? GroupId { get; set; }
     public MachineGroup? Group { get; set; }
     public Guid TemplateId { get; set; }

@@ -22,6 +22,7 @@ public interface IConfigRepository
     Task<Machine?> GetMachineByCodeAsync(string code, bool includeDetails, CancellationToken cancellationToken);
     Task<bool> MachineCodeExistsAsync(string code, Guid? exceptId, CancellationToken cancellationToken);
     Task AddMachineAsync(Machine machine, CancellationToken cancellationToken);
+    void RemoveMachine(Machine machine);
     Task AddConnectionAsync(MachineConnection connection, CancellationToken cancellationToken);
     Task<MachineSignalOverride?> GetSignalOverrideAsync(Guid machineId, Guid templateSignalId, CancellationToken cancellationToken);
     Task AddSignalOverrideAsync(MachineSignalOverride signalOverride, CancellationToken cancellationToken);
