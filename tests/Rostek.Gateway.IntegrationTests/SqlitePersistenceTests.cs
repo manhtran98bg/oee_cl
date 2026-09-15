@@ -44,10 +44,11 @@ public sealed class SqlitePersistenceTests
         Assert.Contains("production_context", tableNames);
         Assert.Contains("production_period", tableNames);
         Assert.Contains("plc_raw_interval", tableNames);
+        Assert.Contains("machine_state_event", tableNames);
+        Assert.Contains("sync_outbox", tableNames);
         Assert.DoesNotContain("production_metric", tableNames);
         Assert.DoesNotContain("product_metric", tableNames);
         Assert.DoesNotContain("downtime_event", tableNames);
-        Assert.DoesNotContain("sync_outbox", tableNames);
         Assert.DoesNotContain("Machines", tableNames);
         Assert.DoesNotContain("TemplateSignals", tableNames);
     }
@@ -69,6 +70,7 @@ public sealed class SqlitePersistenceTests
         Assert.DoesNotContain("product_metric", tableNames);
         Assert.DoesNotContain("downtime_event", tableNames);
         Assert.DoesNotContain("sync_outbox", tableNames);
+        Assert.DoesNotContain("machine_state_event", tableNames);
         Assert.Contains("Machines", tableNames);
         Assert.Contains("TemplateSignals", tableNames);
         Assert.Contains("Model", await ReadColumnNamesAsync(connection, "Machines"));

@@ -12,6 +12,8 @@ public sealed class MesSyncOptions
     public int RetryCount { get; set; } = 3;
     public int BatchSize { get; set; } = 100;
     public int SyncIntervalMs { get; set; } = 5000;
+    public int MachineStateEventSyncIntervalMs { get; set; } = 60000;
+    public int MachineStateEventGapThresholdMs { get; set; } = 15000;
     public bool RequireProductionContext { get; set; }
 }
 
@@ -147,6 +149,36 @@ public sealed record RealtimeSnapshotBuildResult(
     int RawIntervalCount,
     int SkippedItemCount);
 
+public sealed record MachineStateEventBatchPayload(
+    [property: JsonPropertyName("schema_version")] int SchemaVersion,
+    [property: JsonPropertyName("gateway_id")] string GatewayId,
+    [property: JsonPropertyName("created_at")] long CreatedAt,
+    [property: JsonPropertyName("items")] IReadOnlyList<MachineStateEventItemPayload> Items);
+
+public sealed record MachineStateEventItemPayload(
+    [property: JsonPropertyName("event_id")] string EventId,
+    [property: JsonPropertyName("machine_code")] string MachineCode,
+    [property: JsonPropertyName("order_id")] string OrderId,
+    [property: JsonPropertyName("session_id")] string SessionId,
+    [property: JsonPropertyName("state")] string State,
+    [property: JsonPropertyName("start_at")] long StartAt,
+    [property: JsonPropertyName("end_at")] long EndAt,
+    [property: JsonPropertyName("duration_sec")] long DurationSec,
+    [property: JsonPropertyName("is_open")] bool IsOpen);
+
+public sealed record MachineStateEventBuildResult(
+    IReadOnlyList<Rostek.Gateway.Domain.Entities.MachineStateEvent> Events,
+    int SkippedItemCount);
+
+public sealed record OeeLocalProcessingResult(
+    RealtimeSnapshotBuildResult RealtimeSnapshot,
+    MachineStateEventBuildResult MachineStateEvents,
+    int EnqueuedOutboxCount);
+
+public sealed record SyncOutboxDispatchResult(
+    int SentCount,
+    int FailedCount);
+
 public sealed record RealtimeSnapshotSyncStatus(
     long? LastSuccessUnixTimeSeconds,
     string? LastError,
@@ -183,6 +215,58 @@ public interface IRealtimeSnapshotSyncStatusStore
 public interface IRealtimeSnapshotSyncService
 {
     Task<RealtimeSnapshotBuildResult> SyncAsync(string gatewayId, CancellationToken cancellationToken);
+}
+
+public interface IMachineStateEventBuilder
+{
+    Task<MachineStateEventBuildResult> BuildAsync(
+        string gatewayId,
+        IReadOnlyCollection<Rostek.Gateway.Domain.Entities.PlcRawInterval> rawIntervals,
+        long createdAt,
+        CancellationToken cancellationToken);
+}
+
+public interface IOeeLocalProcessingService
+{
+    Task<OeeLocalProcessingResult> ProcessAsync(
+        string gatewayId,
+        IReadOnlyCollection<Rostek.Gateway.Domain.Entities.PlcRawInterval> rawIntervals,
+        long createdAt,
+        CancellationToken cancellationToken);
+}
+
+public interface ISyncOutboxDispatcher
+{
+    Task<SyncOutboxDispatchResult> DispatchPendingAsync(
+        string gatewayId,
+        IReadOnlyCollection<string> topics,
+        CancellationToken cancellationToken);
+}
+
+public interface ISyncOutboxHttpClient
+{
+    Task SendAsync(string endpointPath, string payloadJson, CancellationToken cancellationToken);
+}
+
+public static class SyncOutboxStatuses
+{
+    public const string Pending = "pending";
+    public const string Synced = "synced";
+    public const string Failed = "failed";
+}
+
+public static class SyncOutboxTopics
+{
+    public const string RealtimeSnapshot = "realtime_snapshot";
+    public const string MachineStateEvent = "machine_state_event";
+    public const string ProductionMetric = "production_metric";
+}
+
+public static class MesSyncEndpointPaths
+{
+    public const string RealtimeSnapshots = "/api/v1/gateway/oee/realtime-snapshots";
+    public const string MachineStateEvents = "/api/v1/gateway/oee/machine-state-events";
+    public const string ProductionMetrics = "/api/v1/gateway/oee/production-metrics";
 }
 
 public static class ProductionCommandActions

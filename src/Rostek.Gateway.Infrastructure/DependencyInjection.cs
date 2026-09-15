@@ -22,6 +22,7 @@ public static class DependencyInjection
         services.AddScoped<IOeeLocalRepository, EfCoreOeeLocalRepository>();
         services.AddSingleton<HttpClient>();
         services.AddScoped<IRealtimeSnapshotClient, HttpRealtimeSnapshotClient>();
+        services.AddScoped<ISyncOutboxHttpClient, HttpSyncOutboxClient>();
         services.AddScoped<IMesEquipmentCatalogClient, HttpMesEquipmentCatalogClient>();
         return services;
     }

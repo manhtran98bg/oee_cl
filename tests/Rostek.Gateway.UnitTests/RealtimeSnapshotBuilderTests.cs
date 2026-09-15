@@ -100,24 +100,26 @@ public sealed class RealtimeSnapshotBuilderTests
     {
         var raw = Raw(readAt: 110, shotOk: 120, shotNg: 8, runTime: 18, stopTime: 4, errorTime: 2);
         var capture = new StubRawDataCaptureService([raw]);
-        var builder = new StubRealtimeSnapshotBuilder(new RealtimeSnapshotBatchPayload(
+        var snapshot = new RealtimeSnapshotBuildResult(new RealtimeSnapshotBatchPayload(
             1,
             "GW-M16-01",
             110,
-            [new RealtimeSnapshotItemPayload("M16-01", "TEST_ORDER", "SESSION", "SP", null, "run", 1, 1, 10, 100, 100, 10, EmptyExtra())]));
+            [new RealtimeSnapshotItemPayload("M16-01", "TEST_ORDER", "SESSION", "SP", null, "run", 1, 1, 10, 100, 100, 10, EmptyExtra())]),
+            1,
+            0);
         var status = new RealtimeSnapshotSyncStatusStore();
         var service = new RealtimeSnapshotSyncService(
             Options.Create(new MesSyncOptions { Enabled = true, BaseUrl = "http://localhost", SyncIntervalMs = 5000 }),
             capture,
-            builder,
-            new FailingRealtimeSnapshotClient(),
+            new StubOeeLocalProcessingService(snapshot),
+            new FailingOutboxDispatcher(),
             status,
             NullLogger<RealtimeSnapshotSyncService>.Instance);
 
         await service.SyncAsync("GW-M16-01", CancellationToken.None);
 
         Assert.Equal(1, status.Current.DroppedBatchCount);
-        Assert.Contains("fail", status.Current.LastError, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("failed", status.Current.LastError, StringComparison.OrdinalIgnoreCase);
     }
 
     private static RealtimeSnapshotBuilder CreateBuilder(InMemoryOeeLocalRepository repository, ProductionContextCache cache) =>
@@ -155,15 +157,22 @@ public sealed class RealtimeSnapshotBuilderTests
             Task.FromResult(rawIntervals);
     }
 
-    private sealed class StubRealtimeSnapshotBuilder(RealtimeSnapshotBatchPayload payload) : IRealtimeSnapshotBuilder
+    private sealed class StubOeeLocalProcessingService(RealtimeSnapshotBuildResult snapshot) : IOeeLocalProcessingService
     {
-        public Task<RealtimeSnapshotBuildResult> BuildAsync(string gatewayId, IReadOnlyCollection<PlcRawInterval> rawIntervals, long createdAt, CancellationToken cancellationToken) =>
-            Task.FromResult(new RealtimeSnapshotBuildResult(payload, rawIntervals.Count, 0));
+        public Task<OeeLocalProcessingResult> ProcessAsync(
+            string gatewayId,
+            IReadOnlyCollection<PlcRawInterval> rawIntervals,
+            long createdAt,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new OeeLocalProcessingResult(snapshot, new MachineStateEventBuildResult([], 0), 1));
     }
 
-    private sealed class FailingRealtimeSnapshotClient : IRealtimeSnapshotClient
+    private sealed class FailingOutboxDispatcher : ISyncOutboxDispatcher
     {
-        public Task SendAsync(RealtimeSnapshotBatchPayload payload, CancellationToken cancellationToken) =>
-            throw new InvalidOperationException("fail");
+        public Task<SyncOutboxDispatchResult> DispatchPendingAsync(
+            string gatewayId,
+            IReadOnlyCollection<string> topics,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new SyncOutboxDispatchResult(0, 1));
     }
 }

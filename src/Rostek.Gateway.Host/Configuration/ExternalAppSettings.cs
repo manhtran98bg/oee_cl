@@ -81,6 +81,8 @@ public static class ExternalAppSettings
                 RetryCount = 3,
                 BatchSize = 100,
                 SyncIntervalMs = 5000,
+                MachineStateEventSyncIntervalMs = 60000,
+                MachineStateEventGapThresholdMs = 15000,
                 RequireProductionContext = false
             },
             Kestrel = new

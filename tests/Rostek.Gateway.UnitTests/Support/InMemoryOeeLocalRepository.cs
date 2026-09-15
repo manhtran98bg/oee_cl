@@ -1,4 +1,5 @@
 using Rostek.Gateway.Application.Oee;
+using Rostek.Gateway.Application.MesSync;
 using Rostek.Gateway.Domain.Entities;
 
 namespace Rostek.Gateway.UnitTests.Support;
@@ -8,6 +9,8 @@ public sealed class InMemoryOeeLocalRepository : IOeeLocalRepository
     public List<ProductionContext> Contexts { get; } = [];
     public List<ProductionPeriod> Periods { get; } = [];
     public List<PlcRawInterval> RawIntervals { get; } = [];
+    public List<MachineStateEvent> MachineStateEvents { get; } = [];
+    public List<SyncOutboxMessage> SyncOutboxMessages { get; } = [];
 
     public Task<ProductionContext?> GetProductionContextAsync(string sessionId, CancellationToken cancellationToken) =>
         Task.FromResult(Contexts.FirstOrDefault(context => context.SessionId.Equals(sessionId, StringComparison.OrdinalIgnoreCase)));
@@ -141,5 +144,100 @@ public sealed class InMemoryOeeLocalRepository : IOeeLocalRepository
             .ToList();
         RawIntervals.AddRange(inserted);
         return Task.FromResult<IReadOnlyList<PlcRawInterval>>(inserted);
+    }
+
+    public Task<MachineStateEvent?> GetOpenMachineStateEventAsync(
+        string machine,
+        string orderId,
+        string sessionId,
+        CancellationToken cancellationToken) =>
+        Task.FromResult(MachineStateEvents
+            .Where(item =>
+                item.Machine.Equals(machine, StringComparison.OrdinalIgnoreCase) &&
+                item.OrderId.Equals(orderId, StringComparison.OrdinalIgnoreCase) &&
+                item.SessionId.Equals(sessionId, StringComparison.OrdinalIgnoreCase) &&
+                item.IsOpen)
+            .OrderByDescending(item => item.StartAt)
+            .FirstOrDefault());
+
+    public Task SaveMachineStateEventsAsync(IReadOnlyCollection<MachineStateEvent> stateEvents, CancellationToken cancellationToken)
+    {
+        foreach (var stateEvent in stateEvents)
+        {
+            MachineStateEvents.RemoveAll(item => item.EventId == stateEvent.EventId);
+            MachineStateEvents.Add(stateEvent);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    public Task UpsertSyncOutboxMessageAsync(SyncOutboxMessage message, CancellationToken cancellationToken)
+    {
+        var existing = SyncOutboxMessages.FirstOrDefault(item => item.DedupeKey == message.DedupeKey);
+        if (existing is null)
+        {
+            message.Id = message.Id == 0 ? SyncOutboxMessages.Count + 1 : message.Id;
+            SyncOutboxMessages.Add(message);
+        }
+        else
+        {
+            existing.Topic = message.Topic;
+            existing.EndpointPath = message.EndpointPath;
+            existing.PayloadJson = message.PayloadJson;
+            existing.Status = SyncOutboxStatuses.Pending;
+            existing.NextAttemptAt = message.NextAttemptAt;
+            existing.LastError = null;
+            existing.UpdatedAt = message.UpdatedAt;
+            existing.SyncedAt = null;
+        }
+
+        return Task.CompletedTask;
+    }
+
+    public Task<IReadOnlyList<SyncOutboxMessage>> TakePendingSyncOutboxMessagesAsync(
+        long now,
+        int batchSize,
+        IReadOnlyCollection<string> topics,
+        CancellationToken cancellationToken)
+    {
+        var topicSet = topics.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var messages = SyncOutboxMessages
+            .Where(item =>
+                item.NextAttemptAt <= now &&
+                item.Status is SyncOutboxStatuses.Pending or SyncOutboxStatuses.Failed &&
+                (topicSet.Count == 0 || topicSet.Contains(item.Topic)))
+            .OrderBy(item => item.CreatedAt)
+            .ThenBy(item => item.Id)
+            .Take(Math.Max(1, batchSize))
+            .ToList();
+        return Task.FromResult<IReadOnlyList<SyncOutboxMessage>>(messages);
+    }
+
+    public Task MarkSyncOutboxMessagesSucceededAsync(IReadOnlyCollection<long> ids, long syncedAt, CancellationToken cancellationToken)
+    {
+        foreach (var message in SyncOutboxMessages.Where(item => ids.Contains(item.Id)))
+        {
+            message.Status = SyncOutboxStatuses.Synced;
+            message.LastError = null;
+            message.SyncedAt = syncedAt;
+            message.UpdatedAt = syncedAt;
+        }
+
+        return Task.CompletedTask;
+    }
+
+    public Task MarkSyncOutboxMessagesFailedAsync(IReadOnlyCollection<long> ids, string error, long nextAttemptAt, CancellationToken cancellationToken)
+    {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        foreach (var message in SyncOutboxMessages.Where(item => ids.Contains(item.Id)))
+        {
+            message.Status = SyncOutboxStatuses.Failed;
+            message.AttemptCount += 1;
+            message.LastError = error;
+            message.NextAttemptAt = nextAttemptAt;
+            message.UpdatedAt = now;
+        }
+
+        return Task.CompletedTask;
     }
 }

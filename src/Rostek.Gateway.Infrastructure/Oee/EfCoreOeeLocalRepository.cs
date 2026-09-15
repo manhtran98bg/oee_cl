@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Rostek.Gateway.Application.MesSync;
 using Rostek.Gateway.Application.Oee;
 using Rostek.Gateway.Domain.Entities;
 using Rostek.Gateway.Infrastructure.Persistence;
@@ -178,5 +179,133 @@ public sealed class EfCoreOeeLocalRepository(OeeDbContext dbContext) : IOeeLocal
         }
 
         return inserted;
+    }
+
+    public Task<MachineStateEvent?> GetOpenMachineStateEventAsync(
+        string machine,
+        string orderId,
+        string sessionId,
+        CancellationToken cancellationToken) =>
+        dbContext.MachineStateEvents
+            .Where(item =>
+                item.Machine.ToUpper() == machine.ToUpper() &&
+                item.OrderId.ToUpper() == orderId.ToUpper() &&
+                item.SessionId == sessionId &&
+                item.IsOpen)
+            .OrderByDescending(item => item.StartAt)
+            .FirstOrDefaultAsync(cancellationToken);
+
+    public async Task SaveMachineStateEventsAsync(IReadOnlyCollection<MachineStateEvent> stateEvents, CancellationToken cancellationToken)
+    {
+        foreach (var stateEvent in stateEvents)
+        {
+            if (dbContext.Entry(stateEvent).State != EntityState.Detached)
+            {
+                continue;
+            }
+
+            var exists = await dbContext.MachineStateEvents.AnyAsync(item => item.EventId == stateEvent.EventId, cancellationToken);
+            if (exists)
+            {
+                dbContext.MachineStateEvents.Update(stateEvent);
+            }
+            else
+            {
+                await dbContext.MachineStateEvents.AddAsync(stateEvent, cancellationToken);
+            }
+        }
+
+        if (stateEvents.Count > 0)
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
+    }
+
+    public async Task UpsertSyncOutboxMessageAsync(SyncOutboxMessage message, CancellationToken cancellationToken)
+    {
+        var existing = await dbContext.SyncOutboxMessages.FirstOrDefaultAsync(
+            item => item.DedupeKey == message.DedupeKey,
+            cancellationToken);
+        if (existing is null)
+        {
+            await dbContext.SyncOutboxMessages.AddAsync(message, cancellationToken);
+        }
+        else
+        {
+            existing.Topic = message.Topic;
+            existing.EndpointPath = message.EndpointPath;
+            existing.PayloadJson = message.PayloadJson;
+            existing.Status = SyncOutboxStatuses.Pending;
+            existing.NextAttemptAt = message.NextAttemptAt;
+            existing.LastError = null;
+            existing.UpdatedAt = message.UpdatedAt;
+            existing.SyncedAt = null;
+        }
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<SyncOutboxMessage>> TakePendingSyncOutboxMessagesAsync(
+        long now,
+        int batchSize,
+        IReadOnlyCollection<string> topics,
+        CancellationToken cancellationToken)
+    {
+        var normalizedTopics = topics.Select(topic => topic.Trim()).Where(topic => topic.Length > 0).ToArray();
+        var query = dbContext.SyncOutboxMessages.AsNoTracking()
+            .Where(item =>
+                item.NextAttemptAt <= now &&
+                (item.Status == SyncOutboxStatuses.Pending || item.Status == SyncOutboxStatuses.Failed));
+
+        if (normalizedTopics.Length > 0)
+        {
+            query = query.Where(item => normalizedTopics.Contains(item.Topic));
+        }
+
+        return await query
+            .OrderBy(item => item.CreatedAt)
+            .ThenBy(item => item.Id)
+            .Take(Math.Max(1, batchSize))
+            .ToListAsync(cancellationToken);
+    }
+
+    public async Task MarkSyncOutboxMessagesSucceededAsync(IReadOnlyCollection<long> ids, long syncedAt, CancellationToken cancellationToken)
+    {
+        var messages = await dbContext.SyncOutboxMessages
+            .Where(item => ids.Contains(item.Id))
+            .ToListAsync(cancellationToken);
+        foreach (var message in messages)
+        {
+            message.Status = SyncOutboxStatuses.Synced;
+            message.LastError = null;
+            message.SyncedAt = syncedAt;
+            message.UpdatedAt = syncedAt;
+        }
+
+        if (messages.Count > 0)
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
+    }
+
+    public async Task MarkSyncOutboxMessagesFailedAsync(IReadOnlyCollection<long> ids, string error, long nextAttemptAt, CancellationToken cancellationToken)
+    {
+        var messages = await dbContext.SyncOutboxMessages
+            .Where(item => ids.Contains(item.Id))
+            .ToListAsync(cancellationToken);
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        foreach (var message in messages)
+        {
+            message.Status = SyncOutboxStatuses.Failed;
+            message.AttemptCount += 1;
+            message.NextAttemptAt = nextAttemptAt;
+            message.LastError = error.Length > 1000 ? error[..1000] : error;
+            message.UpdatedAt = now;
+        }
+
+        if (messages.Count > 0)
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
     }
 }

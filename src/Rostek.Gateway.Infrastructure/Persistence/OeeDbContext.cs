@@ -8,6 +8,8 @@ public sealed class OeeDbContext(DbContextOptions<OeeDbContext> options) : DbCon
     public DbSet<ProductionContext> ProductionContexts => Set<ProductionContext>();
     public DbSet<PlcRawInterval> PlcRawIntervals => Set<PlcRawInterval>();
     public DbSet<ProductionPeriod> ProductionPeriods => Set<ProductionPeriod>();
+    public DbSet<MachineStateEvent> MachineStateEvents => Set<MachineStateEvent>();
+    public DbSet<SyncOutboxMessage> SyncOutboxMessages => Set<SyncOutboxMessage>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -81,6 +83,51 @@ public sealed class OeeDbContext(DbContextOptions<OeeDbContext> options) : DbCon
             entity.Property(raw => raw.CycleTimeMs).HasColumnName("cycle_time_ms").IsRequired();
             entity.HasIndex(raw => new { raw.Machine, raw.ReadAt }).IsUnique().HasDatabaseName("ux_plc_raw_interval_machine_read");
             entity.HasIndex(raw => new { raw.Machine, raw.PlcPeriodIndex, raw.ReadAt }).HasDatabaseName("ix_plc_raw_interval_machine_period_read");
+        });
+
+        modelBuilder.Entity<MachineStateEvent>(entity =>
+        {
+            entity.ToTable("machine_state_event");
+            entity.HasKey(stateEvent => stateEvent.EventId);
+            entity.Property(stateEvent => stateEvent.EventId).HasColumnName("event_id").HasMaxLength(200).IsRequired();
+            entity.Property(stateEvent => stateEvent.GatewayId).HasColumnName("gateway_id").HasMaxLength(100).IsRequired();
+            entity.Property(stateEvent => stateEvent.Machine).HasColumnName("machine").HasMaxLength(100).IsRequired();
+            entity.Property(stateEvent => stateEvent.OrderId).HasColumnName("order_id").HasMaxLength(100).IsRequired();
+            entity.Property(stateEvent => stateEvent.SessionId).HasColumnName("session_id").HasMaxLength(100).IsRequired();
+            entity.Property(stateEvent => stateEvent.State).HasColumnName("state").HasMaxLength(50).IsRequired();
+            entity.Property(stateEvent => stateEvent.StartAt).HasColumnName("start_at").IsRequired();
+            entity.Property(stateEvent => stateEvent.EndAt).HasColumnName("end_at").IsRequired();
+            entity.Property(stateEvent => stateEvent.DurationSec).HasColumnName("duration_sec").IsRequired();
+            entity.Property(stateEvent => stateEvent.IsOpen).HasColumnName("is_open").IsRequired();
+            entity.Property(stateEvent => stateEvent.CreatedAt).HasColumnName("created_at").IsRequired();
+            entity.Property(stateEvent => stateEvent.UpdatedAt).HasColumnName("updated_at").IsRequired();
+            entity.HasIndex(stateEvent => new { stateEvent.Machine, stateEvent.SessionId, stateEvent.IsOpen })
+                .HasDatabaseName("ix_machine_state_event_machine_session_open");
+            entity.HasIndex(stateEvent => new { stateEvent.Machine, stateEvent.StartAt })
+                .HasDatabaseName("ix_machine_state_event_machine_start");
+            entity.HasIndex(stateEvent => new { stateEvent.OrderId, stateEvent.StartAt })
+                .HasDatabaseName("ix_machine_state_event_order_start");
+        });
+
+        modelBuilder.Entity<SyncOutboxMessage>(entity =>
+        {
+            entity.ToTable("sync_outbox");
+            entity.HasKey(message => message.Id);
+            entity.Property(message => message.Id).HasColumnName("id").ValueGeneratedOnAdd();
+            entity.Property(message => message.Topic).HasColumnName("topic").HasMaxLength(100).IsRequired();
+            entity.Property(message => message.DedupeKey).HasColumnName("dedupe_key").HasMaxLength(300).IsRequired();
+            entity.Property(message => message.EndpointPath).HasColumnName("endpoint_path").HasMaxLength(300).IsRequired();
+            entity.Property(message => message.PayloadJson).HasColumnName("payload_json").IsRequired();
+            entity.Property(message => message.Status).HasColumnName("status").HasMaxLength(50).IsRequired();
+            entity.Property(message => message.AttemptCount).HasColumnName("attempt_count").IsRequired();
+            entity.Property(message => message.NextAttemptAt).HasColumnName("next_attempt_at").IsRequired();
+            entity.Property(message => message.LastError).HasColumnName("last_error");
+            entity.Property(message => message.CreatedAt).HasColumnName("created_at").IsRequired();
+            entity.Property(message => message.UpdatedAt).HasColumnName("updated_at").IsRequired();
+            entity.Property(message => message.SyncedAt).HasColumnName("synced_at");
+            entity.HasIndex(message => message.DedupeKey).IsUnique().HasDatabaseName("ux_sync_outbox_dedupe_key");
+            entity.HasIndex(message => new { message.Status, message.NextAttemptAt }).HasDatabaseName("ix_sync_outbox_status_next_attempt");
+            entity.HasIndex(message => new { message.Topic, message.Status }).HasDatabaseName("ix_sync_outbox_topic_status");
         });
     }
 }

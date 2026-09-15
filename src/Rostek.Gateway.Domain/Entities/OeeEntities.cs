@@ -53,3 +53,35 @@ public sealed class PlcRawInterval
     public long ErrorTimeTotalSec { get; set; }
     public int CycleTimeMs { get; set; }
 }
+
+public sealed class MachineStateEvent
+{
+    public string EventId { get; set; } = string.Empty;
+    public string GatewayId { get; set; } = string.Empty;
+    public string Machine { get; set; } = string.Empty;
+    public string OrderId { get; set; } = string.Empty;
+    public string SessionId { get; set; } = string.Empty;
+    public string State { get; set; } = "disconnect";
+    public long StartAt { get; set; }
+    public long EndAt { get; set; }
+    public long DurationSec { get; set; }
+    public bool IsOpen { get; set; }
+    public long CreatedAt { get; set; } = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+    public long UpdatedAt { get; set; } = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+}
+
+public sealed class SyncOutboxMessage
+{
+    public long Id { get; set; }
+    public string Topic { get; set; } = string.Empty;
+    public string DedupeKey { get; set; } = string.Empty;
+    public string EndpointPath { get; set; } = string.Empty;
+    public string PayloadJson { get; set; } = "{}";
+    public string Status { get; set; } = "pending";
+    public int AttemptCount { get; set; }
+    public long NextAttemptAt { get; set; }
+    public string? LastError { get; set; }
+    public long CreatedAt { get; set; } = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+    public long UpdatedAt { get; set; } = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+    public long? SyncedAt { get; set; }
+}
