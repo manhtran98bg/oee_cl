@@ -21,6 +21,7 @@ public sealed class SyncOutboxTests
         await repository.SaveProductionContextAsync(context, CancellationToken.None);
         var cache = LoadedCache(repository);
         var processor = new OeeLocalProcessingService(
+            Options.Create(new MesSyncOptions()),
             repository,
             new RealtimeSnapshotBuilder(repository, cache, NullLogger<RealtimeSnapshotBuilder>.Instance),
             new MachineStateEventBuilder(
@@ -34,6 +35,36 @@ public sealed class SyncOutboxTests
 
         Assert.Contains(repository.SyncOutboxMessages, item => item.Topic == SyncOutboxTopics.MachineStateEvent);
         Assert.Contains(repository.SyncOutboxMessages, item => item.Topic == SyncOutboxTopics.RealtimeSnapshot);
+    }
+
+    [Fact]
+    public async Task Local_processing_respects_disabled_sync_topics()
+    {
+        var repository = new InMemoryOeeLocalRepository();
+        var context = await repository.EnsureTestProductionContextAsync("M16-01", 100, CancellationToken.None);
+        context.BaselineRawId = "baseline";
+        context.BaselineCapturedAt = 100;
+        await repository.SaveProductionContextAsync(context, CancellationToken.None);
+        var cache = LoadedCache(repository);
+        var processor = new OeeLocalProcessingService(
+            Options.Create(new MesSyncOptions
+            {
+                RealtimeSnapshotsEnabled = false,
+                MachineStateEventsEnabled = false
+            }),
+            repository,
+            new RealtimeSnapshotBuilder(repository, cache, NullLogger<RealtimeSnapshotBuilder>.Instance),
+            new MachineStateEventBuilder(
+                repository,
+                cache,
+                Options.Create(new MesSyncOptions { MachineStateEventGapThresholdMs = 15000 }),
+                NullLogger<MachineStateEventBuilder>.Instance),
+            NullLogger<OeeLocalProcessingService>.Instance);
+
+        await processor.ProcessAsync("GW-M16-01", [Raw(105)], 105, CancellationToken.None);
+
+        Assert.NotEmpty(repository.MachineStateEvents);
+        Assert.Empty(repository.SyncOutboxMessages);
     }
 
     [Fact]

@@ -6,6 +6,9 @@ namespace Rostek.Gateway.Application.MesSync;
 public sealed class MesSyncOptions
 {
     public bool Enabled { get; set; }
+    public bool RealtimeSnapshotsEnabled { get; set; } = true;
+    public bool MachineStateEventsEnabled { get; set; } = true;
+    public bool ProductionMetricsEnabled { get; set; } = true;
     public string BaseUrl { get; set; } = string.Empty;
     public string BearerToken { get; set; } = string.Empty;
     public int TimeoutSeconds { get; set; } = 30;
@@ -13,6 +16,7 @@ public sealed class MesSyncOptions
     public int BatchSize { get; set; } = 100;
     public int SyncIntervalMs { get; set; } = 5000;
     public int MachineStateEventSyncIntervalMs { get; set; } = 60000;
+    public int ProductionMetricSyncIntervalMs { get; set; } = 60000;
     public int MachineStateEventGapThresholdMs { get; set; } = 15000;
     public bool RequireProductionContext { get; set; }
 }
@@ -118,6 +122,9 @@ public sealed record ProductionCommandBatchResponse(
 
 public sealed record MesSyncStatusDto(
     [property: JsonPropertyName("enabled")] bool Enabled,
+    [property: JsonPropertyName("realtime_snapshots_enabled")] bool RealtimeSnapshotsEnabled,
+    [property: JsonPropertyName("machine_state_events_enabled")] bool MachineStateEventsEnabled,
+    [property: JsonPropertyName("production_metrics_enabled")] bool ProductionMetricsEnabled,
     [property: JsonPropertyName("last_success_unix_seconds")] long? LastSuccessUnixTimeSeconds,
     [property: JsonPropertyName("last_error")] string? LastError,
     [property: JsonPropertyName("last_item_count")] int LastItemCount,

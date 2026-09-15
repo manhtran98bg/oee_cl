@@ -86,7 +86,11 @@ public sealed class DashboardEndpointTests
             var commandJson = await commandResponse.Content.ReadAsStringAsync();
             Assert.Contains("\"accepted_count\":1", commandJson);
             Assert.Equal(HttpStatusCode.OK, statusResponse.StatusCode);
-            Assert.Contains("\"enabled\":false", await statusResponse.Content.ReadAsStringAsync());
+            var statusJson = await statusResponse.Content.ReadAsStringAsync();
+            Assert.Contains("\"enabled\":false", statusJson);
+            Assert.Contains("\"realtime_snapshots_enabled\":true", statusJson);
+            Assert.Contains("\"machine_state_events_enabled\":true", statusJson);
+            Assert.Contains("\"production_metrics_enabled\":true", statusJson);
             await AssertProductionContextSavedToOeeDbAsync(factory, "M16-01");
         }
         finally

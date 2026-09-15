@@ -597,6 +597,7 @@ public sealed class MachineStateEventBuilder(
 }
 
 public sealed class OeeLocalProcessingService(
+    IOptions<MesSyncOptions> options,
     IOeeLocalRepository repository,
     IRealtimeSnapshotBuilder snapshotBuilder,
     IMachineStateEventBuilder stateEventBuilder,
@@ -613,29 +614,36 @@ public sealed class OeeLocalProcessingService(
         var stateEvents = await stateEventBuilder.BuildAsync(gatewayId, rawIntervals, createdAt, cancellationToken);
         var snapshot = await snapshotBuilder.BuildAsync(gatewayId, rawIntervals, createdAt, cancellationToken);
         var enqueued = 0;
+        var current = options.Value;
 
-        foreach (var stateEvent in stateEvents.Events)
+        if (current.MachineStateEventsEnabled)
         {
-            await EnqueueAsync(
-                SyncOutboxTopics.MachineStateEvent,
-                $"machine_state_event:{stateEvent.EventId}",
-                MesSyncEndpointPaths.MachineStateEvents,
-                ToPayloadItem(stateEvent),
-                createdAt,
-                cancellationToken);
-            enqueued++;
+            foreach (var stateEvent in stateEvents.Events)
+            {
+                await EnqueueAsync(
+                    SyncOutboxTopics.MachineStateEvent,
+                    $"machine_state_event:{stateEvent.EventId}",
+                    MesSyncEndpointPaths.MachineStateEvents,
+                    ToPayloadItem(stateEvent),
+                    createdAt,
+                    cancellationToken);
+                enqueued++;
+            }
         }
 
-        foreach (var item in snapshot.Payload.Items)
+        if (current.RealtimeSnapshotsEnabled)
         {
-            await EnqueueAsync(
-                SyncOutboxTopics.RealtimeSnapshot,
-                $"realtime_snapshot:{item.MachineCode}:{item.OrderId}:{item.SessionId}",
-                MesSyncEndpointPaths.RealtimeSnapshots,
-                item,
-                createdAt,
-                cancellationToken);
-            enqueued++;
+            foreach (var item in snapshot.Payload.Items)
+            {
+                await EnqueueAsync(
+                    SyncOutboxTopics.RealtimeSnapshot,
+                    $"realtime_snapshot:{item.MachineCode}:{item.OrderId}:{item.SessionId}",
+                    MesSyncEndpointPaths.RealtimeSnapshots,
+                    item,
+                    createdAt,
+                    cancellationToken);
+                enqueued++;
+            }
         }
 
         logger.LogDebug(
@@ -791,6 +799,12 @@ public sealed class RealtimeSnapshotSyncService(
 
         var payloadJson = JsonSerializer.Serialize(build.Payload, new JsonSerializerOptions(JsonSerializerDefaults.Web));
         logger.LogInformation("Realtime OEE snapshot payload enqueued. PayloadJson={PayloadJson}", payloadJson);
+
+        if (!current.RealtimeSnapshotsEnabled)
+        {
+            logger.LogDebug("Realtime snapshot sync topic is disabled; realtime outbox dispatch skipped");
+            return build;
+        }
 
         var dispatch = await outboxDispatcher.DispatchPendingAsync(gatewayId, [SyncOutboxTopics.RealtimeSnapshot], cancellationToken);
         if (dispatch.FailedCount > 0)

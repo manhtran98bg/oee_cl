@@ -75,6 +75,9 @@ public static class ExternalAppSettings
             MesSync = new
             {
                 Enabled = false,
+                RealtimeSnapshotsEnabled = true,
+                MachineStateEventsEnabled = true,
+                ProductionMetricsEnabled = true,
                 BaseUrl = string.Empty,
                 BearerToken = string.Empty,
                 TimeoutSeconds = 30,
@@ -82,6 +85,7 @@ public static class ExternalAppSettings
                 BatchSize = 100,
                 SyncIntervalMs = 5000,
                 MachineStateEventSyncIntervalMs = 60000,
+                ProductionMetricSyncIntervalMs = 60000,
                 MachineStateEventGapThresholdMs = 15000,
                 RequireProductionContext = false
             },

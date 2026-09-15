@@ -216,6 +216,9 @@ app.MapGet("/api/v1/mes-sync/status", (IRealtimeSnapshotSyncStatusStore statusSt
     var status = statusStore.Current;
     return Results.Ok(new MesSyncStatusDto(
         options.Value.Enabled,
+        options.Value.RealtimeSnapshotsEnabled,
+        options.Value.MachineStateEventsEnabled,
+        options.Value.ProductionMetricsEnabled,
         status.LastSuccessUnixTimeSeconds,
         status.LastError,
         status.LastItemCount,
