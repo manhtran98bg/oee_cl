@@ -13,6 +13,13 @@ public interface IProductionContextCache
     void Remove(string sessionId);
 }
 
+public interface IOrderQuantityCache
+{
+    long GetCompletedQty(string machine, string orderId);
+    void ReplaceCompletedSessions(IReadOnlyCollection<ProductionMetric> finalSessionMetrics);
+    bool AddCompletedSession(string machine, string orderId, string sessionId, long actualQty);
+}
+
 public sealed class ProductionContextCache : IProductionContextCache
 {
     private readonly object _lock = new();
@@ -117,4 +124,66 @@ public sealed class ProductionContextCache : IProductionContextCache
             BaselineCycleTimeMs = context.BaselineCycleTimeMs,
             UpdatedAt = context.UpdatedAt
         };
+}
+
+public sealed class OrderQuantityCache : IOrderQuantityCache
+{
+    private readonly object _lock = new();
+    private Dictionary<string, long> _completedQtyByOrder = new(StringComparer.OrdinalIgnoreCase);
+    private HashSet<string> _appliedSessionKeys = new(StringComparer.OrdinalIgnoreCase);
+
+    public long GetCompletedQty(string machine, string orderId)
+    {
+        lock (_lock)
+        {
+            return _completedQtyByOrder.TryGetValue(OrderKey(machine, orderId), out var qty) ? qty : 0;
+        }
+    }
+
+    public void ReplaceCompletedSessions(IReadOnlyCollection<ProductionMetric> finalSessionMetrics)
+    {
+        lock (_lock)
+        {
+            _completedQtyByOrder = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+            _appliedSessionKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var metric in finalSessionMetrics.Where(IsFinalSessionMetric))
+            {
+                var sessionKey = SessionKey(metric.Machine, metric.OrderId, metric.SessionId!);
+                if (!_appliedSessionKeys.Add(sessionKey))
+                {
+                    continue;
+                }
+
+                var orderKey = OrderKey(metric.Machine, metric.OrderId);
+                _completedQtyByOrder[orderKey] = _completedQtyByOrder.GetValueOrDefault(orderKey) + metric.ActualQty;
+            }
+        }
+    }
+
+    public bool AddCompletedSession(string machine, string orderId, string sessionId, long actualQty)
+    {
+        lock (_lock)
+        {
+            var sessionKey = SessionKey(machine, orderId, sessionId);
+            if (!_appliedSessionKeys.Add(sessionKey))
+            {
+                return false;
+            }
+
+            var orderKey = OrderKey(machine, orderId);
+            _completedQtyByOrder[orderKey] = _completedQtyByOrder.GetValueOrDefault(orderKey) + actualQty;
+            return true;
+        }
+    }
+
+    private static bool IsFinalSessionMetric(ProductionMetric metric) =>
+        metric.IsFinal &&
+        metric.BucketType.Equals("session", StringComparison.OrdinalIgnoreCase) &&
+        !string.IsNullOrWhiteSpace(metric.SessionId);
+
+    private static string OrderKey(string machine, string orderId) => $"{machine.Trim()}|{orderId.Trim()}";
+
+    private static string SessionKey(string machine, string orderId, string sessionId) =>
+        $"{OrderKey(machine, orderId)}|{sessionId.Trim()}";
 }

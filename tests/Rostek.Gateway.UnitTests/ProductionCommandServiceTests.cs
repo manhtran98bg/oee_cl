@@ -1,7 +1,9 @@
 using System.Text.Json;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Rostek.Gateway.Application.MesSync;
 using Rostek.Gateway.Application.Oee;
+using Rostek.Gateway.Domain.Entities;
 using Rostek.Gateway.UnitTests.Support;
 using Xunit;
 
@@ -110,6 +112,49 @@ public sealed class ProductionCommandServiceTests
     }
 
     [Fact]
+    public async Task Stop_creates_final_session_metric_outbox_and_updates_order_quantity_cache()
+    {
+        var repository = new InMemoryOeeLocalRepository();
+        var contextCache = new ProductionContextCache();
+        var orderQuantityCache = new OrderQuantityCache();
+        var service = CreateService(repository, contextCache, orderQuantityCache);
+        await service.HandleBatchAsync(Batch(100, [StartItem("CMD-001", "M16-01", "MO-001", "SP-001", 10m)]), CancellationToken.None);
+        var context = repository.Contexts.Single();
+        context.BaselineRawId = "baseline";
+        context.BaselineCapturedAt = 100;
+        context.BaselineShotOkTotal = 10;
+        context.BaselineShotNgTotal = 1;
+        context.BaselineRunTimeTotalSec = 5;
+        context.BaselineStopTimeTotalSec = 0;
+        context.BaselineErrorTimeTotalSec = 0;
+        await repository.SaveProductionContextAsync(context, CancellationToken.None);
+        contextCache.Upsert(context);
+        repository.RawIntervals.Add(new PlcRawInterval
+        {
+            Machine = "M16-01",
+            ReadAt = 120,
+            PlcPeriodIndex = 1,
+            RunState = OeeRunStates.Run,
+            PeriodActive = 1,
+            ShotOkTotal = 20,
+            ShotNgTotal = 2,
+            RunTimeTotalSec = 20,
+            StopTimeTotalSec = 0,
+            ErrorTimeTotalSec = 0,
+            CycleTimeMs = 10000
+        });
+
+        var response = await service.HandleBatchAsync(Batch(130, [CommandItem("CMD-002", "M16-01", "stop", "MO-001")]), CancellationToken.None);
+
+        Assert.True(response.Accepted);
+        var metric = Assert.Single(repository.ProductionMetrics, item => item.BucketType == "session" && item.IsFinal);
+        Assert.Equal(11, metric.ActualQty);
+        Assert.Equal(11, metric.TotalQty);
+        Assert.Equal(11, orderQuantityCache.GetCompletedQty("M16-01", "MO-001"));
+        Assert.Contains(repository.SyncOutboxMessages, item => item.Topic == SyncOutboxTopics.ProductionMetric);
+    }
+
+    [Fact]
     public async Task Batch_item_reject_does_not_fail_other_items()
     {
         var service = CreateService();
@@ -134,12 +179,25 @@ public sealed class ProductionCommandServiceTests
 
     private static ProductionCommandService CreateService(
         InMemoryOeeLocalRepository? repository = null,
-        ProductionContextCache? cache = null) =>
-        new(
-            repository ?? new InMemoryOeeLocalRepository(),
-            cache ?? new ProductionContextCache(),
+        ProductionContextCache? cache = null,
+        OrderQuantityCache? orderQuantityCache = null)
+    {
+        repository ??= new InMemoryOeeLocalRepository();
+        cache ??= new ProductionContextCache();
+        orderQuantityCache ??= new OrderQuantityCache();
+        return new ProductionCommandService(
+            repository,
+            cache,
+            orderQuantityCache,
+            new ProductionMetricBuilder(
+                repository,
+                cache,
+                Options.Create(new MesSyncOptions()),
+                NullLogger<ProductionMetricBuilder>.Instance),
+            Options.Create(new MesSyncOptions { ProductionMetricsEnabled = true }),
             new InMemoryConfigRepository("M16-01"),
             NullLogger<ProductionCommandService>.Instance);
+    }
 
     private static ProductionCommandBatchRequest Batch(long createdAt, IReadOnlyList<ProductionCommandItemRequest> items) =>
         new()

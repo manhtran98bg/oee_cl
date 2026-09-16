@@ -147,6 +147,7 @@ public sealed record RealtimeSnapshotItemPayload(
     [property: JsonPropertyName("mold_code")] string? MoldCode,
     [property: JsonPropertyName("machine_state")] string MachineState,
     [property: JsonPropertyName("actual_qty")] long ActualQty,
+    [property: JsonPropertyName("total_qty")] long TotalQty,
     [property: JsonPropertyName("planned_qty")] decimal PlannedQty,
     [property: JsonPropertyName("availability")] decimal Availability,
     [property: JsonPropertyName("performance")] decimal Performance,
@@ -273,6 +274,12 @@ public interface IProductionMetricBuilder
         string gatewayId,
         IReadOnlyCollection<Rostek.Gateway.Domain.Entities.PlcRawInterval> rawIntervals,
         long createdAt,
+        CancellationToken cancellationToken);
+
+    Task<Rostek.Gateway.Domain.Entities.ProductionMetric?> BuildFinalSessionAsync(
+        string gatewayId,
+        Rostek.Gateway.Domain.Entities.ProductionContext context,
+        long stoppedAt,
         CancellationToken cancellationToken);
 }
 

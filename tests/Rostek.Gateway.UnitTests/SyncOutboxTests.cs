@@ -23,7 +23,7 @@ public sealed class SyncOutboxTests
         var processor = new OeeLocalProcessingService(
             Options.Create(new MesSyncOptions()),
             repository,
-            new RealtimeSnapshotBuilder(repository, cache, NullLogger<RealtimeSnapshotBuilder>.Instance),
+            new RealtimeSnapshotBuilder(repository, cache, new OrderQuantityCache(), NullLogger<RealtimeSnapshotBuilder>.Instance),
             new MachineStateEventBuilder(
                 repository,
                 cache,
@@ -60,7 +60,7 @@ public sealed class SyncOutboxTests
                 ProductionMetricsEnabled = false
             }),
             repository,
-            new RealtimeSnapshotBuilder(repository, cache, NullLogger<RealtimeSnapshotBuilder>.Instance),
+            new RealtimeSnapshotBuilder(repository, cache, new OrderQuantityCache(), NullLogger<RealtimeSnapshotBuilder>.Instance),
             new MachineStateEventBuilder(
                 repository,
                 cache,

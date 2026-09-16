@@ -12,6 +12,9 @@ namespace Rostek.Gateway.Application.MesSync;
 public sealed class ProductionCommandService(
     IOeeLocalRepository repository,
     IProductionContextCache productionContextCache,
+    IOrderQuantityCache orderQuantityCache,
+    IProductionMetricBuilder productionMetricBuilder,
+    IOptions<MesSyncOptions> options,
     IConfigRepository configRepository,
     ILogger<ProductionCommandService> logger) : IProductionCommandService
 {
@@ -26,7 +29,7 @@ public sealed class ProductionCommandService(
         var items = new List<ProductionCommandResponse>();
         foreach (var item in request.Items ?? [])
         {
-            items.Add(await HandleItemAsync(item, now, cancellationToken));
+            items.Add(await HandleItemAsync(item, request.GatewayId, now, cancellationToken));
         }
 
         var acceptedCount = items.Count(item => item.Accepted);
@@ -60,11 +63,12 @@ public sealed class ProductionCommandService(
             Products = request.Products
         };
         var now = request.OccurredAtUnixTimeSeconds ?? DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        return await HandleItemAsync(item, now, cancellationToken);
+        return await HandleItemAsync(item, "LEGACY", now, cancellationToken);
     }
 
     private async Task<ProductionCommandResponse> HandleItemAsync(
         ProductionCommandItemRequest request,
+        string gatewayId,
         long now,
         CancellationToken cancellationToken)
     {
@@ -99,7 +103,7 @@ public sealed class ProductionCommandService(
         {
             "active" => await StartAsync(request, machine, orderId, now, cancellationToken),
             "pause" => await PauseAsync(request, machine, orderId, now, cancellationToken),
-            "stopped" => await StopAsync(request, machine, orderId, now, cancellationToken),
+            "stopped" => await StopAsync(request, gatewayId, machine, orderId, now, cancellationToken),
             _ => Reject(machine, request.CommandCode, orderId, null, "action must be start, pause, or stop.")
         };
 
@@ -182,6 +186,7 @@ public sealed class ProductionCommandService(
 
     private async Task<ProductionCommandResponse> StopAsync(
         ProductionCommandItemRequest request,
+        string gatewayId,
         string machine,
         string orderId,
         long now,
@@ -193,12 +198,90 @@ public sealed class ProductionCommandService(
             return Reject(machine, request.CommandCode, orderId, null, "active production context was not found for machine/order.");
         }
 
+        await TryFinalizeSessionMetricAsync(gatewayId, context, now, cancellationToken);
         await CloseOpenMachineStateEventAsync(context, now, cancellationToken);
         await repository.CloseProductionPeriodAsync(context.SessionId, now, "stopped", cancellationToken);
         await repository.DeleteProductionContextAsync(context.SessionId, cancellationToken);
         productionContextCache.Remove(context.SessionId);
         return new ProductionCommandResponse(true, context.Machine, request.CommandCode.Trim(), "stopped", context.OrderId, context.SessionId, "Accepted");
     }
+
+    private async Task TryFinalizeSessionMetricAsync(
+        string gatewayId,
+        ProductionContext context,
+        long stoppedAt,
+        CancellationToken cancellationToken)
+    {
+        var metric = await productionMetricBuilder.BuildFinalSessionAsync(gatewayId, context, stoppedAt, cancellationToken);
+        if (metric is null)
+        {
+            return;
+        }
+
+        metric.TotalQty = orderQuantityCache.GetCompletedQty(context.Machine, context.OrderId) + metric.ActualQty;
+        await repository.UpsertProductionMetricsAsync([metric], cancellationToken);
+
+        if (options.Value.ProductionMetricsEnabled)
+        {
+            await EnqueueProductionMetricAsync(metric, stoppedAt, cancellationToken);
+        }
+
+        var added = orderQuantityCache.AddCompletedSession(context.Machine, context.OrderId, context.SessionId, metric.ActualQty);
+        logger.LogInformation(
+            "Final session metric saved. Machine={Machine}, OrderId={OrderId}, SessionId={SessionId}, ActualQty={ActualQty}, TotalQty={TotalQty}, AddedToOrderCache={AddedToOrderCache}",
+            context.Machine,
+            context.OrderId,
+            context.SessionId,
+            metric.ActualQty,
+            metric.TotalQty,
+            added);
+    }
+
+    private async Task EnqueueProductionMetricAsync(
+        ProductionMetric metric,
+        long createdAt,
+        CancellationToken cancellationToken)
+    {
+        await repository.UpsertSyncOutboxMessageAsync(new SyncOutboxMessage
+        {
+            Topic = SyncOutboxTopics.ProductionMetric,
+            DedupeKey = $"production_metric:{metric.MetricId}",
+            EndpointPath = MesSyncEndpointPaths.ProductionMetrics,
+            PayloadJson = JsonSerializer.Serialize(ToPayloadItem(metric), JsonOptions),
+            Status = SyncOutboxStatuses.Pending,
+            AttemptCount = 0,
+            NextAttemptAt = createdAt,
+            CreatedAt = createdAt,
+            UpdatedAt = createdAt
+        }, cancellationToken);
+    }
+
+    private static ProductionMetricItemPayload ToPayloadItem(ProductionMetric metric) =>
+        new(
+            metric.MetricId,
+            metric.BucketType,
+            metric.BucketStart,
+            metric.BucketEnd,
+            metric.Machine,
+            metric.OrderId,
+            metric.SessionId,
+            metric.ProductCode,
+            metric.MoldCode,
+            metric.MachineState,
+            metric.ActualQty,
+            metric.TotalQty,
+            metric.PlannedQty,
+            metric.TargetQty,
+            metric.RunTime,
+            metric.StopTime,
+            metric.ErrorTime,
+            metric.ProductionTime,
+            metric.Availability,
+            metric.Performance,
+            metric.Quality,
+            metric.Oee,
+            metric.IsFinal,
+            JsonSerializer.Deserialize<JsonElement>(metric.ExtraJson));
 
     private static void ClearBaseline(ProductionContext context)
     {
@@ -309,6 +392,7 @@ public sealed class ProductionCommandService(
 public sealed class RealtimeSnapshotBuilder(
     IOeeLocalRepository repository,
     IProductionContextCache productionContextCache,
+    IOrderQuantityCache orderQuantityCache,
     ILogger<RealtimeSnapshotBuilder> logger) : IRealtimeSnapshotBuilder
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -366,6 +450,7 @@ public sealed class RealtimeSnapshotBuilder(
                 var performance = plannedQty > 0 ? Percent(actualQty, plannedQty) : 0m;
                 var quality = actualQty > 0 ? Percent(goodQty, actualQty) : 0m;
                 var oee = Decimal.Round(availability * performance * quality / 10000m, 6);
+                var totalQty = orderQuantityCache.GetCompletedQty(raw.Machine, context.OrderId) + actualQty;
 
                 var item = new RealtimeSnapshotItemPayload(
                     MachineCode: raw.Machine,
@@ -375,6 +460,7 @@ public sealed class RealtimeSnapshotBuilder(
                     MoldCode: product.MoldCode,
                     MachineState: raw.RunState,
                     ActualQty: actualQty,
+                    TotalQty: totalQty,
                     PlannedQty: plannedQty,
                     Availability: availability,
                     Performance: performance,
@@ -384,13 +470,14 @@ public sealed class RealtimeSnapshotBuilder(
                 items.Add(item);
 
                 logger.LogInformation(
-                    "Realtime OEE snapshot calculated. Machine={Machine}, OrderId={OrderId}, SessionId={SessionId}, Product={Product}, State={State}, ActualQty={ActualQty}, PlannedQty={PlannedQty}, RunTime={RunTime}, StopTime={StopTime}, ErrorTime={ErrorTime}, ProductionTime={ProductionTime}, A={Availability}, P={Performance}, Q={Quality}, OEE={Oee}",
+                    "Realtime OEE snapshot calculated. Machine={Machine}, OrderId={OrderId}, SessionId={SessionId}, Product={Product}, State={State}, ActualQty={ActualQty}, TotalQty={TotalQty}, PlannedQty={PlannedQty}, RunTime={RunTime}, StopTime={StopTime}, ErrorTime={ErrorTime}, ProductionTime={ProductionTime}, A={Availability}, P={Performance}, Q={Quality}, OEE={Oee}",
                     item.MachineCode,
                     item.OrderId,
                     item.SessionId,
                     item.ProductCode,
                     item.MachineState,
                     item.ActualQty,
+                    item.TotalQty,
                     item.PlannedQty,
                     runTime,
                     stopTime,
@@ -834,6 +921,63 @@ public sealed class ProductionMetricBuilder(
             metrics.Count,
             skipped);
         return new ProductionMetricBuildResult(metrics, skipped);
+    }
+
+    public async Task<ProductionMetric?> BuildFinalSessionAsync(
+        string gatewayId,
+        ProductionContext context,
+        long stoppedAt,
+        CancellationToken cancellationToken)
+    {
+        if (context.BaselineCapturedAt <= 0)
+        {
+            logger.LogWarning(
+                "Cannot build final session metric because baseline has not been seeded. Machine={Machine}, OrderId={OrderId}, SessionId={SessionId}",
+                context.Machine,
+                context.OrderId,
+                context.SessionId);
+            return null;
+        }
+
+        var raw = await repository.GetLatestRawIntervalAsync(context.Machine, cancellationToken);
+        if (raw is null)
+        {
+            logger.LogWarning(
+                "Cannot build final session metric because latest raw interval was not found. Machine={Machine}, OrderId={OrderId}, SessionId={SessionId}",
+                context.Machine,
+                context.OrderId,
+                context.SessionId);
+            return null;
+        }
+
+        var product = ReadPrimaryProduct(context.ProductsJson);
+        var metric = TryBuildMetric(
+            gatewayId,
+            "session",
+            context.ActivePeriodStartAt,
+            stoppedAt,
+            isFinal: true,
+            context,
+            product,
+            raw,
+            context.BaselineShotOkTotal,
+            context.BaselineShotNgTotal,
+            context.BaselineRunTimeTotalSec,
+            context.BaselineStopTimeTotalSec,
+            context.BaselineErrorTimeTotalSec,
+            stoppedAt);
+
+        if (metric is null)
+        {
+            logger.LogWarning(
+                "Cannot build final session metric because calculated deltas were invalid. Machine={Machine}, OrderId={OrderId}, SessionId={SessionId}, RawReadAt={RawReadAt}",
+                context.Machine,
+                context.OrderId,
+                context.SessionId,
+                raw.ReadAt);
+        }
+
+        return metric;
     }
 
     private async Task<ProductionMetric?> TryBuildBucketMetricAsync(

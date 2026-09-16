@@ -20,6 +20,7 @@ public interface IOeeLocalRepository
     Task<IReadOnlyList<ProductionPeriod>> ListProductionPeriodsByMachineOrderAsync(string machine, string orderId, CancellationToken cancellationToken);
     Task<IReadOnlyList<PlcRawInterval>> InsertMissingRawIntervalsAsync(IReadOnlyCollection<PlcRawInterval> rawIntervals, CancellationToken cancellationToken);
     Task UpsertProductionMetricsAsync(IReadOnlyCollection<ProductionMetric> metrics, CancellationToken cancellationToken);
+    Task<IReadOnlyList<ProductionMetric>> ListFinalSessionProductionMetricsAsync(CancellationToken cancellationToken);
     Task<MachineStateEvent?> GetOpenMachineStateEventAsync(string machine, string orderId, string sessionId, CancellationToken cancellationToken);
     Task SaveMachineStateEventsAsync(IReadOnlyCollection<MachineStateEvent> stateEvents, CancellationToken cancellationToken);
     Task UpsertSyncOutboxMessageAsync(SyncOutboxMessage message, CancellationToken cancellationToken);

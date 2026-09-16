@@ -177,6 +177,17 @@ public sealed class InMemoryOeeLocalRepository : IOeeLocalRepository
         return Task.CompletedTask;
     }
 
+    public Task<IReadOnlyList<ProductionMetric>> ListFinalSessionProductionMetricsAsync(CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<ProductionMetric>>(ProductionMetrics
+            .Where(metric =>
+                metric.BucketType.Equals("session", StringComparison.OrdinalIgnoreCase) &&
+                metric.IsFinal &&
+                !string.IsNullOrWhiteSpace(metric.SessionId))
+            .OrderBy(metric => metric.Machine, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(metric => metric.OrderId, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(metric => metric.SessionId, StringComparer.OrdinalIgnoreCase)
+            .ToList());
+
     public Task<MachineStateEvent?> GetOpenMachineStateEventAsync(
         string machine,
         string orderId,

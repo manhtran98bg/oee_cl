@@ -253,6 +253,18 @@ public sealed class EfCoreOeeLocalRepository(OeeDbContext dbContext) : IOeeLocal
         }
     }
 
+    public async Task<IReadOnlyList<ProductionMetric>> ListFinalSessionProductionMetricsAsync(CancellationToken cancellationToken) =>
+        await dbContext.ProductionMetrics
+            .AsNoTracking()
+            .Where(metric =>
+                metric.BucketType == "session" &&
+                metric.IsFinal &&
+                metric.SessionId != null)
+            .OrderBy(metric => metric.Machine)
+            .ThenBy(metric => metric.OrderId)
+            .ThenBy(metric => metric.SessionId)
+            .ToListAsync(cancellationToken);
+
     public Task<MachineStateEvent?> GetOpenMachineStateEventAsync(
         string machine,
         string orderId,

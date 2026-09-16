@@ -56,6 +56,7 @@ builder.Services.AddScoped<IOeeLocalProcessingService, OeeLocalProcessingService
 builder.Services.AddScoped<IRealtimeSnapshotSyncService, RealtimeSnapshotSyncService>();
 builder.Services.AddScoped<ISyncOutboxDispatcher, MesSyncOutboxDispatcher>();
 builder.Services.AddSingleton<IProductionContextCache, ProductionContextCache>();
+builder.Services.AddSingleton<IOrderQuantityCache, OrderQuantityCache>();
 builder.Services.AddSingleton<IRealtimeSnapshotSyncStatusStore, RealtimeSnapshotSyncStatusStore>();
 builder.Services.AddScoped<IProductionCommandService, ProductionCommandService>();
 builder.Services.AddScoped<IMesEquipmentCatalogService, MesEquipmentCatalogService>();
@@ -119,6 +120,11 @@ using (var scope = app.Services.CreateScope())
             context.BaselineCapturedAt,
             context.ProductsJson);
     }
+
+    var orderQuantityCache = scope.ServiceProvider.GetRequiredService<IOrderQuantityCache>();
+    var finalSessionMetrics = await oeeRepository.ListFinalSessionProductionMetricsAsync(CancellationToken.None);
+    orderQuantityCache.ReplaceCompletedSessions(finalSessionMetrics);
+    startupLogger.LogInformation("Loaded {FinalSessionMetricCount} final session metrics into order quantity cache", finalSessionMetrics.Count);
 
     var versionService = scope.ServiceProvider.GetRequiredService<IConfigurationVersionService>();
     var active = await versionService.GetActiveAsync(CancellationToken.None);

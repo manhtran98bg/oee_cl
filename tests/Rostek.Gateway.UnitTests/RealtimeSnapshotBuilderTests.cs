@@ -31,6 +31,7 @@ public sealed class RealtimeSnapshotBuilderTests
     public async Task Build_calculates_realtime_snapshot_from_context_baseline()
     {
         var repository = new InMemoryOeeLocalRepository();
+        var orderQuantityCache = new OrderQuantityCache();
         var context = await repository.EnsureTestProductionContextAsync("M16-01", 100, CancellationToken.None);
         context.ProductsJson = """[{"product_id":"SP-001","mold_code":"KHUON-001","gain":4.0,"cycle_time":12.5,"target":10000}]""";
         context.BaselineRawId = "baseline";
@@ -41,7 +42,8 @@ public sealed class RealtimeSnapshotBuilderTests
         context.BaselineStopTimeTotalSec = 2;
         context.BaselineErrorTimeTotalSec = 1;
         await repository.SaveProductionContextAsync(context, CancellationToken.None);
-        var builder = CreateBuilder(repository, LoadedCache(repository));
+        Assert.True(orderQuantityCache.AddCompletedSession("M16-01", "TEST_ORDER", "OLD-SESSION", 40));
+        var builder = CreateBuilder(repository, LoadedCache(repository), orderQuantityCache);
         var raw = Raw(readAt: 110, shotOk: 120, shotNg: 8, runTime: 18, stopTime: 4, errorTime: 2);
 
         var result = await builder.BuildAsync("GW-M16-01", [raw], createdAt: 160, CancellationToken.None);
@@ -53,6 +55,7 @@ public sealed class RealtimeSnapshotBuilderTests
         Assert.Equal("SP-001", item.ProductCode);
         Assert.Equal("KHUON-001", item.MoldCode);
         Assert.Equal(23, item.ActualQty);
+        Assert.Equal(63, item.TotalQty);
         Assert.Equal(16m, item.PlannedQty);
         Assert.Equal(13.333333m, item.Availability);
         Assert.Equal(100m, item.Performance);
@@ -104,7 +107,7 @@ public sealed class RealtimeSnapshotBuilderTests
             1,
             "GW-M16-01",
             110,
-            [new RealtimeSnapshotItemPayload("M16-01", "TEST_ORDER", "SESSION", "SP", null, "run", 1, 1, 10, 100, 100, 10, EmptyExtra())]),
+            [new RealtimeSnapshotItemPayload("M16-01", "TEST_ORDER", "SESSION", "SP", null, "run", 1, 1, 1, 10, 100, 100, 10, EmptyExtra())]),
             1,
             0);
         var status = new RealtimeSnapshotSyncStatusStore();
@@ -122,8 +125,11 @@ public sealed class RealtimeSnapshotBuilderTests
         Assert.Contains("failed", status.Current.LastError, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static RealtimeSnapshotBuilder CreateBuilder(InMemoryOeeLocalRepository repository, ProductionContextCache cache) =>
-        new(repository, cache, NullLogger<RealtimeSnapshotBuilder>.Instance);
+    private static RealtimeSnapshotBuilder CreateBuilder(
+        InMemoryOeeLocalRepository repository,
+        ProductionContextCache cache,
+        IOrderQuantityCache? orderQuantityCache = null) =>
+        new(repository, cache, orderQuantityCache ?? new OrderQuantityCache(), NullLogger<RealtimeSnapshotBuilder>.Instance);
 
     private static ProductionContextCache LoadedCache(InMemoryOeeLocalRepository repository)
     {
