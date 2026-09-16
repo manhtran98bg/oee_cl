@@ -11,6 +11,7 @@ public sealed class InMemoryOeeLocalRepository : IOeeLocalRepository
     public List<PlcRawInterval> RawIntervals { get; } = [];
     public List<MachineStateEvent> MachineStateEvents { get; } = [];
     public List<SyncOutboxMessage> SyncOutboxMessages { get; } = [];
+    public List<ProductionMetric> ProductionMetrics { get; } = [];
 
     public Task<ProductionContext?> GetProductionContextAsync(string sessionId, CancellationToken cancellationToken) =>
         Task.FromResult(Contexts.FirstOrDefault(context => context.SessionId.Equals(sessionId, StringComparison.OrdinalIgnoreCase)));
@@ -33,7 +34,9 @@ public sealed class InMemoryOeeLocalRepository : IOeeLocalRepository
 
     public Task<IReadOnlyList<ProductionContext>> ListCapturableProductionContextsAsync(string machine, CancellationToken cancellationToken) =>
         Task.FromResult<IReadOnlyList<ProductionContext>>(Contexts
-            .Where(context => context.Machine.Equals(machine, StringComparison.OrdinalIgnoreCase) && context.Status is "active" or "pause")
+            .Where(context =>
+                context.Machine.Equals(machine, StringComparison.OrdinalIgnoreCase) &&
+                context.Status is "active" or "pause")
             .OrderBy(context => context.OrderId, StringComparer.OrdinalIgnoreCase)
             .ThenBy(context => context.SessionId, StringComparer.OrdinalIgnoreCase)
             .ToList());
@@ -137,6 +140,23 @@ public sealed class InMemoryOeeLocalRepository : IOeeLocalRepository
             .OrderByDescending(item => item.ReadAt)
             .FirstOrDefault());
 
+    public Task<IReadOnlyList<PlcRawInterval>> ListRawIntervalsAsync(string machine, long startAt, long endAt, CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<PlcRawInterval>>(RawIntervals
+            .Where(item =>
+                item.Machine.Equals(machine, StringComparison.OrdinalIgnoreCase) &&
+                item.ReadAt >= startAt &&
+                item.ReadAt <= endAt)
+            .OrderBy(item => item.ReadAt)
+            .ToList());
+
+    public Task<IReadOnlyList<ProductionPeriod>> ListProductionPeriodsByMachineOrderAsync(string machine, string orderId, CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<ProductionPeriod>>(Periods
+            .Where(item =>
+                item.Machine.Equals(machine, StringComparison.OrdinalIgnoreCase) &&
+                item.OrderId.Equals(orderId, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(item => item.StartAt)
+            .ToList());
+
     public Task<IReadOnlyList<PlcRawInterval>> InsertMissingRawIntervalsAsync(IReadOnlyCollection<PlcRawInterval> rawIntervals, CancellationToken cancellationToken)
     {
         var inserted = rawIntervals
@@ -144,6 +164,17 @@ public sealed class InMemoryOeeLocalRepository : IOeeLocalRepository
             .ToList();
         RawIntervals.AddRange(inserted);
         return Task.FromResult<IReadOnlyList<PlcRawInterval>>(inserted);
+    }
+
+    public Task UpsertProductionMetricsAsync(IReadOnlyCollection<ProductionMetric> metrics, CancellationToken cancellationToken)
+    {
+        foreach (var metric in metrics)
+        {
+            ProductionMetrics.RemoveAll(item => item.MetricId == metric.MetricId);
+            ProductionMetrics.Add(metric);
+        }
+
+        return Task.CompletedTask;
     }
 
     public Task<MachineStateEvent?> GetOpenMachineStateEventAsync(

@@ -51,6 +51,7 @@ builder.Services.AddScoped<IRawDataCaptureService, RawDataCaptureService>();
 builder.Services.AddSingleton<IGatewayOeeTimerService, GatewayOeeTimerService>();
 builder.Services.AddScoped<IRealtimeSnapshotBuilder, RealtimeSnapshotBuilder>();
 builder.Services.AddScoped<IMachineStateEventBuilder, MachineStateEventBuilder>();
+builder.Services.AddScoped<IProductionMetricBuilder, ProductionMetricBuilder>();
 builder.Services.AddScoped<IOeeLocalProcessingService, OeeLocalProcessingService>();
 builder.Services.AddScoped<IRealtimeSnapshotSyncService, RealtimeSnapshotSyncService>();
 builder.Services.AddScoped<ISyncOutboxDispatcher, MesSyncOutboxDispatcher>();

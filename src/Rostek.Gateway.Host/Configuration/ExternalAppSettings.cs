@@ -86,6 +86,9 @@ public static class ExternalAppSettings
                 SyncIntervalMs = 5000,
                 MachineStateEventSyncIntervalMs = 60000,
                 ProductionMetricSyncIntervalMs = 60000,
+                ProductionMetricHourUpdateIntervalMs = 60000,
+                ProductionMetricDayUpdateIntervalMs = 300000,
+                ProductionMetricTimeZoneId = "Asia/Ho_Chi_Minh",
                 MachineStateEventGapThresholdMs = 15000,
                 RequireProductionContext = false
             },

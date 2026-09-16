@@ -16,7 +16,10 @@ public interface IOeeLocalRepository
     Task<int> GetNextPlcPeriodIndexAsync(string machine, string orderId, CancellationToken cancellationToken);
     Task CloseProductionPeriodAsync(string periodId, long endAt, string status, CancellationToken cancellationToken);
     Task<PlcRawInterval?> GetLatestRawIntervalAsync(string machine, CancellationToken cancellationToken);
+    Task<IReadOnlyList<PlcRawInterval>> ListRawIntervalsAsync(string machine, long startAt, long endAt, CancellationToken cancellationToken);
+    Task<IReadOnlyList<ProductionPeriod>> ListProductionPeriodsByMachineOrderAsync(string machine, string orderId, CancellationToken cancellationToken);
     Task<IReadOnlyList<PlcRawInterval>> InsertMissingRawIntervalsAsync(IReadOnlyCollection<PlcRawInterval> rawIntervals, CancellationToken cancellationToken);
+    Task UpsertProductionMetricsAsync(IReadOnlyCollection<ProductionMetric> metrics, CancellationToken cancellationToken);
     Task<MachineStateEvent?> GetOpenMachineStateEventAsync(string machine, string orderId, string sessionId, CancellationToken cancellationToken);
     Task SaveMachineStateEventsAsync(IReadOnlyCollection<MachineStateEvent> stateEvents, CancellationToken cancellationToken);
     Task UpsertSyncOutboxMessageAsync(SyncOutboxMessage message, CancellationToken cancellationToken);

@@ -156,6 +156,32 @@ public sealed class EfCoreOeeLocalRepository(OeeDbContext dbContext) : IOeeLocal
             .OrderByDescending(item => item.ReadAt)
             .FirstOrDefaultAsync(cancellationToken);
 
+    public async Task<IReadOnlyList<PlcRawInterval>> ListRawIntervalsAsync(
+        string machine,
+        long startAt,
+        long endAt,
+        CancellationToken cancellationToken) =>
+        await dbContext.PlcRawIntervals
+            .AsNoTracking()
+            .Where(item =>
+                item.Machine.ToUpper() == machine.ToUpper() &&
+                item.ReadAt >= startAt &&
+                item.ReadAt <= endAt)
+            .OrderBy(item => item.ReadAt)
+            .ToListAsync(cancellationToken);
+
+    public async Task<IReadOnlyList<ProductionPeriod>> ListProductionPeriodsByMachineOrderAsync(
+        string machine,
+        string orderId,
+        CancellationToken cancellationToken) =>
+        await dbContext.ProductionPeriods
+            .AsNoTracking()
+            .Where(item =>
+                item.Machine.ToUpper() == machine.ToUpper() &&
+                item.OrderId.ToUpper() == orderId.ToUpper())
+            .OrderBy(item => item.StartAt)
+            .ToListAsync(cancellationToken);
+
     public async Task<IReadOnlyList<PlcRawInterval>> InsertMissingRawIntervalsAsync(IReadOnlyCollection<PlcRawInterval> rawIntervals, CancellationToken cancellationToken)
     {
         var inserted = new List<PlcRawInterval>();
@@ -179,6 +205,52 @@ public sealed class EfCoreOeeLocalRepository(OeeDbContext dbContext) : IOeeLocal
         }
 
         return inserted;
+    }
+
+    public async Task UpsertProductionMetricsAsync(IReadOnlyCollection<ProductionMetric> metrics, CancellationToken cancellationToken)
+    {
+        foreach (var metric in metrics)
+        {
+            var existing = await dbContext.ProductionMetrics.FirstOrDefaultAsync(
+                item => item.MetricId == metric.MetricId,
+                cancellationToken);
+            if (existing is null)
+            {
+                await dbContext.ProductionMetrics.AddAsync(metric, cancellationToken);
+                continue;
+            }
+
+            existing.BucketType = metric.BucketType;
+            existing.BucketStart = metric.BucketStart;
+            existing.BucketEnd = metric.BucketEnd;
+            existing.IsFinal = metric.IsFinal;
+            existing.GatewayId = metric.GatewayId;
+            existing.Machine = metric.Machine;
+            existing.OrderId = metric.OrderId;
+            existing.SessionId = metric.SessionId;
+            existing.ProductCode = metric.ProductCode;
+            existing.MoldCode = metric.MoldCode;
+            existing.MachineState = metric.MachineState;
+            existing.ActualQty = metric.ActualQty;
+            existing.TotalQty = metric.TotalQty;
+            existing.PlannedQty = metric.PlannedQty;
+            existing.TargetQty = metric.TargetQty;
+            existing.RunTime = metric.RunTime;
+            existing.StopTime = metric.StopTime;
+            existing.ErrorTime = metric.ErrorTime;
+            existing.ProductionTime = metric.ProductionTime;
+            existing.Availability = metric.Availability;
+            existing.Performance = metric.Performance;
+            existing.Quality = metric.Quality;
+            existing.Oee = metric.Oee;
+            existing.ExtraJson = metric.ExtraJson;
+            existing.UpdatedAt = metric.UpdatedAt;
+        }
+
+        if (metrics.Count > 0)
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
     }
 
     public Task<MachineStateEvent?> GetOpenMachineStateEventAsync(

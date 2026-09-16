@@ -85,3 +85,34 @@ public sealed class SyncOutboxMessage
     public long UpdatedAt { get; set; } = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
     public long? SyncedAt { get; set; }
 }
+
+public sealed class ProductionMetric
+{
+    public string MetricId { get; set; } = string.Empty;
+    public string BucketType { get; set; } = string.Empty;
+    public long BucketStart { get; set; }
+    public long BucketEnd { get; set; }
+    public bool IsFinal { get; set; }
+    public string GatewayId { get; set; } = string.Empty;
+    public string Machine { get; set; } = string.Empty;
+    public string OrderId { get; set; } = string.Empty;
+    public string? SessionId { get; set; }
+    public string ProductCode { get; set; } = string.Empty;
+    public string? MoldCode { get; set; }
+    public string MachineState { get; set; } = "disconnect";
+    public long ActualQty { get; set; }
+    public long TotalQty { get; set; }
+    public decimal PlannedQty { get; set; }
+    public int TargetQty { get; set; }
+    public long RunTime { get; set; }
+    public long StopTime { get; set; }
+    public long ErrorTime { get; set; }
+    public long ProductionTime { get; set; }
+    public decimal Availability { get; set; }
+    public decimal Performance { get; set; }
+    public decimal Quality { get; set; }
+    public decimal Oee { get; set; }
+    public string ExtraJson { get; set; } = "{}";
+    public long CreatedAt { get; set; } = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+    public long UpdatedAt { get; set; } = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+}

@@ -164,7 +164,7 @@ public sealed class RealtimeSnapshotBuilderTests
             IReadOnlyCollection<PlcRawInterval> rawIntervals,
             long createdAt,
             CancellationToken cancellationToken) =>
-            Task.FromResult(new OeeLocalProcessingResult(snapshot, new MachineStateEventBuildResult([], 0), 1));
+            Task.FromResult(new OeeLocalProcessingResult(snapshot, new MachineStateEventBuildResult([], 0), new ProductionMetricBuildResult([], 0), 1));
     }
 
     private sealed class FailingOutboxDispatcher : ISyncOutboxDispatcher

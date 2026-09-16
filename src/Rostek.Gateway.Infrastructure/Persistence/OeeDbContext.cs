@@ -10,6 +10,7 @@ public sealed class OeeDbContext(DbContextOptions<OeeDbContext> options) : DbCon
     public DbSet<ProductionPeriod> ProductionPeriods => Set<ProductionPeriod>();
     public DbSet<MachineStateEvent> MachineStateEvents => Set<MachineStateEvent>();
     public DbSet<SyncOutboxMessage> SyncOutboxMessages => Set<SyncOutboxMessage>();
+    public DbSet<ProductionMetric> ProductionMetrics => Set<ProductionMetric>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -128,6 +129,45 @@ public sealed class OeeDbContext(DbContextOptions<OeeDbContext> options) : DbCon
             entity.HasIndex(message => message.DedupeKey).IsUnique().HasDatabaseName("ux_sync_outbox_dedupe_key");
             entity.HasIndex(message => new { message.Status, message.NextAttemptAt }).HasDatabaseName("ix_sync_outbox_status_next_attempt");
             entity.HasIndex(message => new { message.Topic, message.Status }).HasDatabaseName("ix_sync_outbox_topic_status");
+        });
+
+        modelBuilder.Entity<ProductionMetric>(entity =>
+        {
+            entity.ToTable("production_metric");
+            entity.HasKey(metric => metric.MetricId);
+            entity.Property(metric => metric.MetricId).HasColumnName("metric_id").HasMaxLength(300).IsRequired();
+            entity.Property(metric => metric.BucketType).HasColumnName("bucket_type").HasMaxLength(50).IsRequired();
+            entity.Property(metric => metric.BucketStart).HasColumnName("bucket_start").IsRequired();
+            entity.Property(metric => metric.BucketEnd).HasColumnName("bucket_end").IsRequired();
+            entity.Property(metric => metric.IsFinal).HasColumnName("is_final").IsRequired();
+            entity.Property(metric => metric.GatewayId).HasColumnName("gateway_id").HasMaxLength(100).IsRequired();
+            entity.Property(metric => metric.Machine).HasColumnName("machine").HasMaxLength(100).IsRequired();
+            entity.Property(metric => metric.OrderId).HasColumnName("order_id").HasMaxLength(100).IsRequired();
+            entity.Property(metric => metric.SessionId).HasColumnName("session_id").HasMaxLength(100);
+            entity.Property(metric => metric.ProductCode).HasColumnName("product_code").HasMaxLength(100).IsRequired();
+            entity.Property(metric => metric.MoldCode).HasColumnName("mold_code").HasMaxLength(100);
+            entity.Property(metric => metric.MachineState).HasColumnName("machine_state").HasMaxLength(50).IsRequired();
+            entity.Property(metric => metric.ActualQty).HasColumnName("actual_qty").IsRequired();
+            entity.Property(metric => metric.TotalQty).HasColumnName("total_qty").IsRequired();
+            entity.Property(metric => metric.PlannedQty).HasColumnName("planned_qty").IsRequired();
+            entity.Property(metric => metric.TargetQty).HasColumnName("target_qty").IsRequired();
+            entity.Property(metric => metric.RunTime).HasColumnName("run_time").IsRequired();
+            entity.Property(metric => metric.StopTime).HasColumnName("stop_time").IsRequired();
+            entity.Property(metric => metric.ErrorTime).HasColumnName("error_time").IsRequired();
+            entity.Property(metric => metric.ProductionTime).HasColumnName("production_time").IsRequired();
+            entity.Property(metric => metric.Availability).HasColumnName("availability").IsRequired();
+            entity.Property(metric => metric.Performance).HasColumnName("performance").IsRequired();
+            entity.Property(metric => metric.Quality).HasColumnName("quality").IsRequired();
+            entity.Property(metric => metric.Oee).HasColumnName("oee").IsRequired();
+            entity.Property(metric => metric.ExtraJson).HasColumnName("extra_json").IsRequired();
+            entity.Property(metric => metric.CreatedAt).HasColumnName("created_at").IsRequired();
+            entity.Property(metric => metric.UpdatedAt).HasColumnName("updated_at").IsRequired();
+            entity.HasIndex(metric => new { metric.BucketType, metric.BucketStart, metric.BucketEnd })
+                .HasDatabaseName("ix_production_metric_bucket");
+            entity.HasIndex(metric => new { metric.Machine, metric.OrderId, metric.BucketType })
+                .HasDatabaseName("ix_production_metric_machine_order_bucket");
+            entity.HasIndex(metric => new { metric.IsFinal, metric.UpdatedAt })
+                .HasDatabaseName("ix_production_metric_final_updated");
         });
     }
 }

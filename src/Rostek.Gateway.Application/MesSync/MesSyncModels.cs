@@ -17,6 +17,9 @@ public sealed class MesSyncOptions
     public int SyncIntervalMs { get; set; } = 5000;
     public int MachineStateEventSyncIntervalMs { get; set; } = 60000;
     public int ProductionMetricSyncIntervalMs { get; set; } = 60000;
+    public int ProductionMetricHourUpdateIntervalMs { get; set; } = 60000;
+    public int ProductionMetricDayUpdateIntervalMs { get; set; } = 300000;
+    public string ProductionMetricTimeZoneId { get; set; } = "Asia/Ho_Chi_Minh";
     public int MachineStateEventGapThresholdMs { get; set; } = 15000;
     public bool RequireProductionContext { get; set; }
 }
@@ -177,9 +180,40 @@ public sealed record MachineStateEventBuildResult(
     IReadOnlyList<Rostek.Gateway.Domain.Entities.MachineStateEvent> Events,
     int SkippedItemCount);
 
+public sealed record ProductionMetricItemPayload(
+    [property: JsonPropertyName("metric_id")] string MetricId,
+    [property: JsonPropertyName("bucket_type")] string BucketType,
+    [property: JsonPropertyName("bucket_start")] long BucketStart,
+    [property: JsonPropertyName("bucket_end")] long BucketEnd,
+    [property: JsonPropertyName("machine_code")] string MachineCode,
+    [property: JsonPropertyName("order_id")] string OrderId,
+    [property: JsonPropertyName("session_id")] string? SessionId,
+    [property: JsonPropertyName("product_code")] string ProductCode,
+    [property: JsonPropertyName("mold_code")] string? MoldCode,
+    [property: JsonPropertyName("machine_state")] string MachineState,
+    [property: JsonPropertyName("actual_qty")] long ActualQty,
+    [property: JsonPropertyName("total_qty")] long TotalQty,
+    [property: JsonPropertyName("planned_qty")] decimal PlannedQty,
+    [property: JsonPropertyName("target_qty")] int TargetQty,
+    [property: JsonPropertyName("run_time")] long RunTime,
+    [property: JsonPropertyName("stop_time")] long StopTime,
+    [property: JsonPropertyName("error_time")] long ErrorTime,
+    [property: JsonPropertyName("production_time")] long ProductionTime,
+    [property: JsonPropertyName("availability")] decimal Availability,
+    [property: JsonPropertyName("performance")] decimal Performance,
+    [property: JsonPropertyName("quality")] decimal Quality,
+    [property: JsonPropertyName("oee")] decimal Oee,
+    [property: JsonPropertyName("is_final")] bool IsFinal,
+    [property: JsonPropertyName("extra")] JsonElement Extra);
+
+public sealed record ProductionMetricBuildResult(
+    IReadOnlyList<Rostek.Gateway.Domain.Entities.ProductionMetric> Metrics,
+    int SkippedItemCount);
+
 public sealed record OeeLocalProcessingResult(
     RealtimeSnapshotBuildResult RealtimeSnapshot,
     MachineStateEventBuildResult MachineStateEvents,
+    ProductionMetricBuildResult ProductionMetrics,
     int EnqueuedOutboxCount);
 
 public sealed record SyncOutboxDispatchResult(
@@ -227,6 +261,15 @@ public interface IRealtimeSnapshotSyncService
 public interface IMachineStateEventBuilder
 {
     Task<MachineStateEventBuildResult> BuildAsync(
+        string gatewayId,
+        IReadOnlyCollection<Rostek.Gateway.Domain.Entities.PlcRawInterval> rawIntervals,
+        long createdAt,
+        CancellationToken cancellationToken);
+}
+
+public interface IProductionMetricBuilder
+{
+    Task<ProductionMetricBuildResult> BuildAsync(
         string gatewayId,
         IReadOnlyCollection<Rostek.Gateway.Domain.Entities.PlcRawInterval> rawIntervals,
         long createdAt,

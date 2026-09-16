@@ -601,6 +601,7 @@ public sealed class OeeLocalProcessingService(
     IOeeLocalRepository repository,
     IRealtimeSnapshotBuilder snapshotBuilder,
     IMachineStateEventBuilder stateEventBuilder,
+    IProductionMetricBuilder productionMetricBuilder,
     ILogger<OeeLocalProcessingService> logger) : IOeeLocalProcessingService
 {
     private static readonly JsonSerializerOptions PayloadJsonOptions = new(JsonSerializerDefaults.Web);
@@ -613,6 +614,7 @@ public sealed class OeeLocalProcessingService(
     {
         var stateEvents = await stateEventBuilder.BuildAsync(gatewayId, rawIntervals, createdAt, cancellationToken);
         var snapshot = await snapshotBuilder.BuildAsync(gatewayId, rawIntervals, createdAt, cancellationToken);
+        var productionMetrics = await productionMetricBuilder.BuildAsync(gatewayId, rawIntervals, createdAt, cancellationToken);
         var enqueued = 0;
         var current = options.Value;
 
@@ -646,14 +648,30 @@ public sealed class OeeLocalProcessingService(
             }
         }
 
+        if (current.ProductionMetricsEnabled)
+        {
+            foreach (var metric in productionMetrics.Metrics)
+            {
+                await EnqueueAsync(
+                    SyncOutboxTopics.ProductionMetric,
+                    $"production_metric:{metric.MetricId}",
+                    MesSyncEndpointPaths.ProductionMetrics,
+                    ToPayloadItem(metric),
+                    createdAt,
+                    cancellationToken);
+                enqueued++;
+            }
+        }
+
         logger.LogDebug(
-            "OEE local processing completed. RawIntervals={RawIntervals}, StateEvents={StateEvents}, SnapshotItems={SnapshotItems}, Enqueued={Enqueued}",
+            "OEE local processing completed. RawIntervals={RawIntervals}, StateEvents={StateEvents}, SnapshotItems={SnapshotItems}, ProductionMetrics={ProductionMetrics}, Enqueued={Enqueued}",
             rawIntervals.Count,
             stateEvents.Events.Count,
             snapshot.Payload.Items.Count,
+            productionMetrics.Metrics.Count,
             enqueued);
 
-        return new OeeLocalProcessingResult(snapshot, stateEvents, enqueued);
+        return new OeeLocalProcessingResult(snapshot, stateEvents, productionMetrics, enqueued);
     }
 
     private async Task EnqueueAsync<TPayload>(
@@ -690,6 +708,347 @@ public sealed class OeeLocalProcessingService(
             stateEvent.EndAt,
             stateEvent.DurationSec,
             stateEvent.IsOpen);
+
+    private static ProductionMetricItemPayload ToPayloadItem(ProductionMetric metric) =>
+        new(
+            metric.MetricId,
+            metric.BucketType,
+            metric.BucketStart,
+            metric.BucketEnd,
+            metric.Machine,
+            metric.OrderId,
+            metric.SessionId,
+            metric.ProductCode,
+            metric.MoldCode,
+            metric.MachineState,
+            metric.ActualQty,
+            metric.TotalQty,
+            metric.PlannedQty,
+            metric.TargetQty,
+            metric.RunTime,
+            metric.StopTime,
+            metric.ErrorTime,
+            metric.ProductionTime,
+            metric.Availability,
+            metric.Performance,
+            metric.Quality,
+            metric.Oee,
+            metric.IsFinal,
+            JsonSerializer.Deserialize<JsonElement>(metric.ExtraJson));
+}
+
+public sealed class ProductionMetricBuilder(
+    IOeeLocalRepository repository,
+    IProductionContextCache productionContextCache,
+    IOptions<MesSyncOptions> options,
+    ILogger<ProductionMetricBuilder> logger) : IProductionMetricBuilder
+{
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    public async Task<ProductionMetricBuildResult> BuildAsync(
+        string gatewayId,
+        IReadOnlyCollection<PlcRawInterval> rawIntervals,
+        long createdAt,
+        CancellationToken cancellationToken)
+    {
+        var metrics = new List<ProductionMetric>();
+        var skipped = 0;
+        var timeZone = ResolveTimeZone(options.Value.ProductionMetricTimeZoneId);
+
+        foreach (var raw in rawIntervals.OrderBy(item => item.Machine, StringComparer.OrdinalIgnoreCase))
+        {
+            var contexts = productionContextCache.GetCapturableByMachine(raw.Machine);
+            if (contexts.Count == 0)
+            {
+                contexts = await repository.ListCapturableProductionContextsAsync(raw.Machine, cancellationToken);
+            }
+
+            foreach (var context in contexts)
+            {
+                if (context.BaselineCapturedAt <= 0)
+                {
+                    skipped++;
+                    continue;
+                }
+
+                var product = ReadPrimaryProduct(context.ProductsJson);
+                var sessionMetric = TryBuildMetric(
+                    gatewayId,
+                    "session",
+                    context.ActivePeriodStartAt,
+                    createdAt,
+                    isFinal: false,
+                    context,
+                    product,
+                    raw,
+                    context.BaselineShotOkTotal,
+                    context.BaselineShotNgTotal,
+                    context.BaselineRunTimeTotalSec,
+                    context.BaselineStopTimeTotalSec,
+                    context.BaselineErrorTimeTotalSec,
+                    createdAt);
+                if (sessionMetric is not null)
+                {
+                    metrics.Add(sessionMetric);
+                }
+
+                var orderMetric = sessionMetric is null
+                    ? null
+                    : CloneAsOrderMetric(gatewayId, sessionMetric, context, createdAt);
+                if (orderMetric is not null)
+                {
+                    metrics.Add(orderMetric);
+                }
+
+                var hour = GetLocalBucket(createdAt, timeZone, TimeSpan.FromHours(1));
+                var previousHourMetric = await TryBuildBucketMetricAsync(gatewayId, "hour", hour.Start - 3600, hour.Start, context, product, createdAt, cancellationToken);
+                if (previousHourMetric is not null)
+                {
+                    metrics.Add(previousHourMetric);
+                }
+
+                var hourMetric = await TryBuildBucketMetricAsync(gatewayId, "hour", hour.Start, hour.End, context, product, createdAt, cancellationToken);
+                if (hourMetric is not null)
+                {
+                    metrics.Add(hourMetric);
+                }
+
+                var day = GetLocalDayBucket(createdAt, timeZone);
+                var previousDayMetric = await TryBuildBucketMetricAsync(gatewayId, "day", day.Start - 86400, day.Start, context, product, createdAt, cancellationToken);
+                if (previousDayMetric is not null)
+                {
+                    metrics.Add(previousDayMetric);
+                }
+
+                var dayMetric = await TryBuildBucketMetricAsync(gatewayId, "day", day.Start, day.End, context, product, createdAt, cancellationToken);
+                if (dayMetric is not null)
+                {
+                    metrics.Add(dayMetric);
+                }
+            }
+        }
+
+        await repository.UpsertProductionMetricsAsync(metrics, cancellationToken);
+        logger.LogDebug(
+            "Production metrics built. Metrics={MetricCount}, Skipped={SkippedCount}",
+            metrics.Count,
+            skipped);
+        return new ProductionMetricBuildResult(metrics, skipped);
+    }
+
+    private async Task<ProductionMetric?> TryBuildBucketMetricAsync(
+        string gatewayId,
+        string bucketType,
+        long bucketStart,
+        long bucketEnd,
+        ProductionContext context,
+        OeeProductDefinition product,
+        long createdAt,
+        CancellationToken cancellationToken)
+    {
+        var effectiveStart = Math.Max(context.ActivePeriodStartAt, bucketStart);
+        var effectiveEnd = Math.Min(createdAt, bucketEnd);
+        if (effectiveEnd <= effectiveStart)
+        {
+            return null;
+        }
+
+        var rawItems = await repository.ListRawIntervalsAsync(context.Machine, effectiveStart, effectiveEnd, cancellationToken);
+        if (rawItems.Count == 0)
+        {
+            return null;
+        }
+
+        var baseline = rawItems.First();
+        var current = rawItems.Last();
+        if (current.ReadAt < baseline.ReadAt)
+        {
+            return null;
+        }
+
+        return TryBuildMetric(
+            gatewayId,
+            bucketType,
+            bucketStart,
+            bucketEnd,
+            isFinal: createdAt >= bucketEnd,
+            context,
+            product,
+            current,
+            baseline.ShotOkTotal,
+            baseline.ShotNgTotal,
+            baseline.RunTimeTotalSec,
+            baseline.StopTimeTotalSec,
+            baseline.ErrorTimeTotalSec,
+            createdAt,
+            productionTimeOverride: Math.Max(0, effectiveEnd - effectiveStart));
+    }
+
+    private static ProductionMetric? TryBuildMetric(
+        string gatewayId,
+        string bucketType,
+        long bucketStart,
+        long bucketEnd,
+        bool isFinal,
+        ProductionContext context,
+        OeeProductDefinition product,
+        PlcRawInterval currentRaw,
+        long baselineShotOk,
+        long baselineShotNg,
+        long baselineRunTime,
+        long baselineStopTime,
+        long baselineErrorTime,
+        long createdAt,
+        long? productionTimeOverride = null)
+    {
+        var goodQty = currentRaw.ShotOkTotal - baselineShotOk;
+        var ngQty = currentRaw.ShotNgTotal - baselineShotNg;
+        var runTime = currentRaw.RunTimeTotalSec - baselineRunTime;
+        var stopTime = currentRaw.StopTimeTotalSec - baselineStopTime;
+        var errorTime = currentRaw.ErrorTimeTotalSec - baselineErrorTime;
+        if (goodQty < 0 || ngQty < 0 || runTime < 0 || stopTime < 0 || errorTime < 0)
+        {
+            return null;
+        }
+
+        var actualQty = goodQty + ngQty;
+        var productionTime = productionTimeOverride ?? Math.Max(0, bucketEnd - bucketStart);
+        var cycleTime = product.EffectiveCycleTime > 0
+            ? product.EffectiveCycleTime
+            : currentRaw.CycleTimeMs > 0 ? currentRaw.CycleTimeMs / 1000m : 0m;
+        var plannedQty = cycleTime > 0
+            ? decimal.Floor(productionTime / cycleTime) * product.Gain
+            : 0m;
+        var availability = Percent(runTime, productionTime);
+        var performance = plannedQty > 0 ? Percent(actualQty, plannedQty) : 0m;
+        var quality = actualQty > 0 ? Percent(goodQty, actualQty) : 0m;
+        var oee = decimal.Round(availability * performance * quality / 10000m, 6);
+        var metricId = BuildMetricId(gatewayId, bucketType, context.Machine, context.OrderId, context.SessionId, bucketStart);
+
+        return new ProductionMetric
+        {
+            MetricId = metricId,
+            BucketType = bucketType,
+            BucketStart = bucketStart,
+            BucketEnd = bucketEnd,
+            IsFinal = isFinal,
+            GatewayId = gatewayId,
+            Machine = context.Machine,
+            OrderId = context.OrderId,
+            SessionId = bucketType == "order" ? null : context.SessionId,
+            ProductCode = string.IsNullOrWhiteSpace(product.ProductId) ? "UNKNOWN_PRODUCT" : product.ProductId,
+            MoldCode = product.MoldCode,
+            MachineState = currentRaw.RunState,
+            ActualQty = actualQty,
+            TotalQty = actualQty,
+            PlannedQty = plannedQty,
+            TargetQty = product.Target,
+            RunTime = runTime,
+            StopTime = stopTime,
+            ErrorTime = errorTime,
+            ProductionTime = productionTime,
+            Availability = availability,
+            Performance = performance,
+            Quality = quality,
+            Oee = oee,
+            ExtraJson = "{}",
+            CreatedAt = createdAt,
+            UpdatedAt = createdAt
+        };
+    }
+
+    private static ProductionMetric CloneAsOrderMetric(string gatewayId, ProductionMetric source, ProductionContext context, long createdAt)
+    {
+        var orderStart = context.ActivePeriodStartAt;
+        return new ProductionMetric
+        {
+            MetricId = BuildMetricId(gatewayId, "order", context.Machine, context.OrderId, "order", orderStart),
+            BucketType = "order",
+            BucketStart = orderStart,
+            BucketEnd = createdAt,
+            IsFinal = false,
+            GatewayId = gatewayId,
+            Machine = source.Machine,
+            OrderId = source.OrderId,
+            SessionId = null,
+            ProductCode = source.ProductCode,
+            MoldCode = source.MoldCode,
+            MachineState = source.MachineState,
+            ActualQty = source.ActualQty,
+            TotalQty = source.TotalQty,
+            PlannedQty = source.PlannedQty,
+            TargetQty = source.TargetQty,
+            RunTime = source.RunTime,
+            StopTime = source.StopTime,
+            ErrorTime = source.ErrorTime,
+            ProductionTime = source.ProductionTime,
+            Availability = source.Availability,
+            Performance = source.Performance,
+            Quality = source.Quality,
+            Oee = source.Oee,
+            ExtraJson = "{}",
+            CreatedAt = createdAt,
+            UpdatedAt = createdAt
+        };
+    }
+
+    private static OeeProductDefinition ReadPrimaryProduct(string productsJson)
+    {
+        try
+        {
+            var products = JsonSerializer.Deserialize<List<OeeProductDefinition>>(productsJson, JsonOptions);
+            return products?.FirstOrDefault(product => !string.IsNullOrWhiteSpace(product.ProductId)) ?? new OeeProductDefinition { ProductId = "UNKNOWN_PRODUCT", Gain = 1m };
+        }
+        catch (JsonException)
+        {
+            return new OeeProductDefinition { ProductId = "UNKNOWN_PRODUCT", Gain = 1m };
+        }
+    }
+
+    private static decimal Percent(decimal numerator, decimal denominator)
+    {
+        if (denominator <= 0)
+        {
+            return 0m;
+        }
+
+        return decimal.Round(Math.Clamp(numerator / denominator * 100m, 0m, 100m), 6);
+    }
+
+    private static string BuildMetricId(string gatewayId, string bucketType, string machine, string orderId, string sessionId, long bucketStart) =>
+        $"{gatewayId}:{bucketType}:{machine}:{orderId}:{sessionId}:{bucketStart}";
+
+    private static TimeZoneInfo ResolveTimeZone(string timeZoneId)
+    {
+        try
+        {
+            return TimeZoneInfo.FindSystemTimeZoneById(timeZoneId);
+        }
+        catch (TimeZoneNotFoundException)
+        {
+            return TimeZoneInfo.FindSystemTimeZoneById("SE Asia Standard Time");
+        }
+        catch (InvalidTimeZoneException)
+        {
+            return TimeZoneInfo.FindSystemTimeZoneById("SE Asia Standard Time");
+        }
+    }
+
+    private static (long Start, long End) GetLocalBucket(long unixSeconds, TimeZoneInfo timeZone, TimeSpan size)
+    {
+        var local = TimeZoneInfo.ConvertTime(DateTimeOffset.FromUnixTimeSeconds(unixSeconds), timeZone);
+        var hourStart = new DateTimeOffset(local.Year, local.Month, local.Day, local.Hour, 0, 0, local.Offset);
+        var hourEnd = hourStart.Add(size);
+        return (hourStart.ToUnixTimeSeconds(), hourEnd.ToUnixTimeSeconds());
+    }
+
+    private static (long Start, long End) GetLocalDayBucket(long unixSeconds, TimeZoneInfo timeZone)
+    {
+        var local = TimeZoneInfo.ConvertTime(DateTimeOffset.FromUnixTimeSeconds(unixSeconds), timeZone);
+        var dayStart = new DateTimeOffset(local.Year, local.Month, local.Day, 0, 0, 0, local.Offset);
+        var dayEnd = dayStart.AddDays(1);
+        return (dayStart.ToUnixTimeSeconds(), dayEnd.ToUnixTimeSeconds());
+    }
 }
 
 public sealed class MesSyncOutboxDispatcher(

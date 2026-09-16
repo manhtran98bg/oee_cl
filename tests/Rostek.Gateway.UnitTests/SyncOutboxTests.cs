@@ -29,12 +29,18 @@ public sealed class SyncOutboxTests
                 cache,
                 Options.Create(new MesSyncOptions { MachineStateEventGapThresholdMs = 15000 }),
                 NullLogger<MachineStateEventBuilder>.Instance),
+            new ProductionMetricBuilder(
+                repository,
+                cache,
+                Options.Create(new MesSyncOptions()),
+                NullLogger<ProductionMetricBuilder>.Instance),
             NullLogger<OeeLocalProcessingService>.Instance);
 
         await processor.ProcessAsync("GW-M16-01", [Raw(105)], 105, CancellationToken.None);
 
         Assert.Contains(repository.SyncOutboxMessages, item => item.Topic == SyncOutboxTopics.MachineStateEvent);
         Assert.Contains(repository.SyncOutboxMessages, item => item.Topic == SyncOutboxTopics.RealtimeSnapshot);
+        Assert.Contains(repository.SyncOutboxMessages, item => item.Topic == SyncOutboxTopics.ProductionMetric);
     }
 
     [Fact]
@@ -50,7 +56,8 @@ public sealed class SyncOutboxTests
             Options.Create(new MesSyncOptions
             {
                 RealtimeSnapshotsEnabled = false,
-                MachineStateEventsEnabled = false
+                MachineStateEventsEnabled = false,
+                ProductionMetricsEnabled = false
             }),
             repository,
             new RealtimeSnapshotBuilder(repository, cache, NullLogger<RealtimeSnapshotBuilder>.Instance),
@@ -59,6 +66,11 @@ public sealed class SyncOutboxTests
                 cache,
                 Options.Create(new MesSyncOptions { MachineStateEventGapThresholdMs = 15000 }),
                 NullLogger<MachineStateEventBuilder>.Instance),
+            new ProductionMetricBuilder(
+                repository,
+                cache,
+                Options.Create(new MesSyncOptions { ProductionMetricsEnabled = false }),
+                NullLogger<ProductionMetricBuilder>.Instance),
             NullLogger<OeeLocalProcessingService>.Instance);
 
         await processor.ProcessAsync("GW-M16-01", [Raw(105)], 105, CancellationToken.None);
