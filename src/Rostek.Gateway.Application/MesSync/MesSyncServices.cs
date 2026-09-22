@@ -457,13 +457,13 @@ public sealed class RealtimeSnapshotBuilder(
                     SeedBaseline(context, effectiveRaw, createdAt);
                     await repository.SaveProductionContextAsync(context, cancellationToken);
                     productionContextCache.Upsert(context);
-                    logger.LogInformation(
-                        "Seeded realtime OEE baseline. Machine={Machine}, OrderId={OrderId}, SessionId={SessionId}, RawId={RawId}, CapturedAt={CapturedAt}",
-                        context.Machine,
-                        context.OrderId,
-                        context.SessionId,
-                        effectiveRaw.Id,
-                        effectiveRaw.ReadAt);
+                    // logger.LogInformation(
+                    //     "Seeded realtime OEE baseline. Machine={Machine}, OrderId={OrderId}, SessionId={SessionId}, RawId={RawId}, CapturedAt={CapturedAt}",
+                    //     context.Machine,
+                    //     context.OrderId,
+                    //     context.SessionId,
+                    //     effectiveRaw.Id,
+                    //     effectiveRaw.ReadAt);
                     items.Add(CreateEmptyContextItem(context, state));
                     skipped++;
                     continue;
@@ -481,24 +481,24 @@ public sealed class RealtimeSnapshotBuilder(
                     out var productionTime);
                 items.Add(item);
 
-                logger.LogInformation(
-                    "Realtime OEE snapshot calculated. Machine={Machine}, OrderId={OrderId}, SessionId={SessionId}, Product={Product}, State={State}, ActualQty={ActualQty}, TotalQty={TotalQty}, PlannedQty={PlannedQty}, RunTime={RunTime}, StopTime={StopTime}, ErrorTime={ErrorTime}, ProductionTime={ProductionTime}, A={Availability}, P={Performance}, Q={Quality}, OEE={Oee}",
-                    item.MachineCode,
-                    item.OrderId,
-                    item.SessionId,
-                    item.ProductCode,
-                    item.MachineState,
-                    item.ActualQty,
-                    item.TotalQty,
-                    item.PlannedQty,
-                    runTime,
-                    stopTime,
-                    errorTime,
-                    productionTime,
-                    item.Availability,
-                    item.Performance,
-                    item.Quality,
-                    item.Oee);
+                // logger.LogInformation(
+                //     "Realtime OEE snapshot calculated. Machine={Machine}, OrderId={OrderId}, SessionId={SessionId}, Product={Product}, State={State}, ActualQty={ActualQty}, TotalQty={TotalQty}, PlannedQty={PlannedQty}, RunTime={RunTime}, StopTime={StopTime}, ErrorTime={ErrorTime}, ProductionTime={ProductionTime}, A={Availability}, P={Performance}, Q={Quality}, OEE={Oee}",
+                //     item.MachineCode,
+                //     item.OrderId,
+                //     item.SessionId,
+                //     item.ProductCode,
+                //     item.MachineState,
+                //     item.ActualQty,
+                //     item.TotalQty,
+                //     item.PlannedQty,
+                //     runTime,
+                //     stopTime,
+                //     errorTime,
+                //     productionTime,
+                //     item.Availability,
+                //     item.Performance,
+                //     item.Quality,
+                //     item.Oee);
             }
         }
 
@@ -613,12 +613,12 @@ public sealed class RealtimeSnapshotBuilder(
             return delta;
         }
 
-        logger.LogWarning(
-            "Realtime OEE delta was negative and was clamped to zero. Machine={Machine}, SignalCode={SignalCode}, Current={Current}, Baseline={Baseline}",
-            machine,
-            signalCode,
-            current,
-            baseline);
+        // logger.LogWarning(
+        //     "Realtime OEE delta was negative and was clamped to zero. Machine={Machine}, SignalCode={SignalCode}, Current={Current}, Baseline={Baseline}",
+        //     machine,
+        //     signalCode,
+        //     current,
+        //     baseline);
         return 0;
     }
 
@@ -1400,19 +1400,19 @@ public sealed class RealtimeSnapshotSyncService(
         var build = processed.RealtimeSnapshot;
         if (build.Payload.Items.Count == 0)
         {
-            logger.LogDebug(
-                "No realtime snapshot items were built. RawIntervals={RawIntervals}, Skipped={Skipped}",
-                build.RawIntervalCount,
-                build.SkippedItemCount);
+            // logger.LogDebug(
+            //     "No realtime snapshot items were built. RawIntervals={RawIntervals}, Skipped={Skipped}",
+            //     build.RawIntervalCount,
+            //     build.SkippedItemCount);
             return build;
         }
 
         var payloadJson = JsonSerializer.Serialize(build.Payload, new JsonSerializerOptions(JsonSerializerDefaults.Web));
-        logger.LogInformation("Realtime OEE snapshot payload enqueued. PayloadJson={PayloadJson}", payloadJson);
+        // logger.LogInformation("Realtime OEE snapshot payload enqueued. PayloadJson={PayloadJson}", payloadJson);
 
         if (!current.RealtimeSnapshotsEnabled)
         {
-            logger.LogDebug("Realtime snapshot sync topic is disabled; realtime outbox dispatch skipped");
+            // logger.LogDebug("Realtime snapshot sync topic is disabled; realtime outbox dispatch skipped");
             return build;
         }
 
