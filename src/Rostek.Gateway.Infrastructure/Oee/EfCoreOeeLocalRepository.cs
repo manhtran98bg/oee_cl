@@ -329,6 +329,31 @@ public sealed class EfCoreOeeLocalRepository(OeeDbContext dbContext) : IOeeLocal
         await dbContext.SaveChangesAsync(cancellationToken);
     }
 
+    public async Task RemoveStaleRealtimeSnapshotMessagesAsync(
+        IReadOnlyCollection<string> retainedDedupeKeys,
+        CancellationToken cancellationToken)
+    {
+        var retained = retainedDedupeKeys
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var query = dbContext.SyncOutboxMessages.Where(message =>
+            message.Topic == SyncOutboxTopics.RealtimeSnapshot &&
+            (message.Status == SyncOutboxStatuses.Pending || message.Status == SyncOutboxStatuses.Failed));
+        if (retained.Length > 0)
+        {
+            query = query.Where(message => !retained.Contains(message.DedupeKey));
+        }
+
+        var stale = await query.ToListAsync(cancellationToken);
+        if (stale.Count == 0)
+        {
+            return;
+        }
+
+        dbContext.SyncOutboxMessages.RemoveRange(stale);
+        await dbContext.SaveChangesAsync(cancellationToken);
+    }
+
     public async Task<IReadOnlyList<SyncOutboxMessage>> TakePendingSyncOutboxMessagesAsync(
         long now,
         int batchSize,

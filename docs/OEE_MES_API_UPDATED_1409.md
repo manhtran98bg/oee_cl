@@ -233,7 +233,7 @@ Content-Type: application/json
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "gateway_id": "GW-M16-01",
   "created_at": 1788750000,
   "items": [
@@ -247,7 +247,6 @@ Content-Type: application/json
       "actual_qty": 125,
       "total_qty": 205,
       "planned_qty": 144,
-      "target_qty": 10000,
       "availability": 83.333333,
       "performance": 86.805556,
       "quality": 96,
@@ -258,11 +257,39 @@ Content-Type: application/json
 }
 ```
 
+Máy enabled nhưng chưa có production order vẫn được gửi để MES dashboard luôn hiển thị đầy đủ thiết bị:
+
+```json
+{
+  "schema_version": 2,
+  "gateway_id": "GW-M16-01",
+  "created_at": 1788750000,
+  "items": [
+    {
+      "machine_code": "M16-02",
+      "order_id": null,
+      "session_id": null,
+      "product_code": null,
+      "mold_code": null,
+      "machine_state": "stop",
+      "actual_qty": 0,
+      "total_qty": 0,
+      "planned_qty": 0,
+      "availability": 0,
+      "performance": 0,
+      "quality": 0,
+      "oee": 0,
+      "extra": {}
+    }
+  ]
+}
+```
+
 ### 3.2 Sync Payload Schema
 
 | Field | Type | Required | Description |
 |---|---:|---:|---|
-| `schema_version` | integer | yes | Version payload. Hiện tại là `1`. |
+| `schema_version` | integer | yes | Version realtime payload. Hiện tại là `2`. |
 | `gateway_id` | string | yes | Mã Gateway gửi dữ liệu. |
 | `created_at` | integer | yes | Unix seconds, thời điểm Gateway build payload. |
 | `items` | array | yes | Danh sách realtime snapshot. |
@@ -272,20 +299,26 @@ Item schema:
 | Field | Type | Required | Description |
 |---|---:|---:|---|
 | `machine_code` | string | yes | Mã máy. |
-| `order_id` | string | yes | Mã lệnh sản xuất. |
-| `session_id` | string | yes | Mã lượt sản xuất do Gateway sinh. |
-| `product_code` | string | yes | Mã sản phẩm chính. |
+| `order_id` | string/null | no | Mã lệnh sản xuất; `null` khi máy chưa có production context. |
+| `session_id` | string/null | no | Mã lượt sản xuất; `null` khi máy chưa có production context. |
+| `product_code` | string/null | no | Mã sản phẩm chính; `null` khi máy chưa có production context. |
 | `mold_code` | string/null | no | Mã khuôn. |
 | `machine_state` | string | yes | `run`, `stop`, `error`, `disconnect`. |
 | `actual_qty` | integer | yes | Sản lượng hiện tại của session. |
 | `total_qty` | integer | yes | Tổng sản lượng hiện tại đã sản xuất của order, gồm các session đã hoàn thành và session hiện tại. |
 | `planned_qty` | number | yes | Sản lượng theo kế hoạch của session. |
-| `target_qty` | integer | yes | Sản lượng dự kiến của order. |
 | `availability` | number | yes | A, phần trăm `0..100`. |
 | `performance` | number | yes | P, phần trăm `0..100`. |
 | `quality` | number | yes | Q, phần trăm `0..100`. |
 | `oee` | number | yes | OEE, phần trăm `0..100`. |
 | `extra` | object | yes | Hiện tại Gateway gửi `{}`. |
+
+Quy tắc hiển thị:
+
+- Gateway gửi một item cho mỗi active/pause session nếu máy đang có lệnh sản xuất.
+- Gateway gửi đúng một machine-level item với `order_id = null` nếu máy enabled nhưng chưa có lệnh.
+- Máy enabled chưa có dữ liệu runtime được gửi với `machine_state = "disconnect"`.
+- MES dùng `machine_code` để upsert thiết bị và hiển thị trạng thái `Chưa có lệnh` khi `order_id = null`.
 
 MES trả HTTP `2xx` là thành công.
 
@@ -420,7 +453,6 @@ Không tạo endpoint riêng cho từng bucket.
       "actual_qty": 125,
       "total_qty": 205,
       "planned_qty": 144,
-      "target_qty": 10000,
       "run_time": 1500,
       "stop_time": 240,
       "error_time": 60,

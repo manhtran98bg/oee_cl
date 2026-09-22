@@ -236,6 +236,18 @@ public sealed class InMemoryOeeLocalRepository : IOeeLocalRepository
         return Task.CompletedTask;
     }
 
+    public Task RemoveStaleRealtimeSnapshotMessagesAsync(
+        IReadOnlyCollection<string> retainedDedupeKeys,
+        CancellationToken cancellationToken)
+    {
+        var retained = retainedDedupeKeys.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        SyncOutboxMessages.RemoveAll(message =>
+            message.Topic == SyncOutboxTopics.RealtimeSnapshot &&
+            message.Status is SyncOutboxStatuses.Pending or SyncOutboxStatuses.Failed &&
+            !retained.Contains(message.DedupeKey));
+        return Task.CompletedTask;
+    }
+
     public Task<IReadOnlyList<SyncOutboxMessage>> TakePendingSyncOutboxMessagesAsync(
         long now,
         int batchSize,

@@ -38,7 +38,7 @@ public sealed class RawDataCaptureServiceTests
     }
 
     [Fact]
-    public async Task Capture_skips_without_context_when_required()
+    public async Task Capture_stores_inactive_raw_without_context_when_required()
     {
         var reader = new MutableMachineValueReader();
         var repository = new InMemoryOeeLocalRepository();
@@ -47,8 +47,11 @@ public sealed class RawDataCaptureServiceTests
 
         var inserted = await service.CaptureAsync(TimeSpan.FromSeconds(5), requireProductionContext: true, CancellationToken.None);
 
-        Assert.Empty(inserted);
+        var raw = Assert.Single(inserted);
+        Assert.Equal(0, raw.PlcPeriodIndex);
+        Assert.Equal(0, raw.PeriodActive);
         Assert.Empty(repository.Contexts);
+        Assert.Empty(repository.Periods);
     }
 
     [Fact]

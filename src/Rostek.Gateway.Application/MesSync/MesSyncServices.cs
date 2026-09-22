@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Rostek.Gateway.Application.Oee;
 using Rostek.Gateway.Application.Ports;
+using Rostek.Gateway.Contracts.Runtime;
 using Rostek.Gateway.Domain.Entities;
 
 namespace Rostek.Gateway.Application.MesSync;
@@ -393,6 +394,7 @@ public sealed class RealtimeSnapshotBuilder(
     IOeeLocalRepository repository,
     IProductionContextCache productionContextCache,
     IOrderQuantityCache orderQuantityCache,
+    IRuntimeConfigurationProvider runtimeConfigurationProvider,
     ILogger<RealtimeSnapshotBuilder> logger) : IRealtimeSnapshotBuilder
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -406,19 +408,53 @@ public sealed class RealtimeSnapshotBuilder(
         var items = new List<RealtimeSnapshotItemPayload>();
         var skipped = 0;
 
-        foreach (var raw in rawIntervals.OrderBy(item => item.Machine, StringComparer.OrdinalIgnoreCase))
+        var currentRawByMachine = rawIntervals
+            .GroupBy(raw => raw.Machine, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => group.OrderByDescending(raw => raw.ReadAt).First(),
+                StringComparer.OrdinalIgnoreCase);
+        var enabledMachines = runtimeConfigurationProvider.Current.Machines.Values
+            .Where(machine => machine.Enabled)
+            .OrderBy(machine => machine.MachineCode, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        foreach (var machine in enabledMachines)
         {
-            var contexts = productionContextCache.GetCapturableByMachine(raw.Machine);
+            var hasCurrentRaw = currentRawByMachine.TryGetValue(machine.MachineCode, out var currentRaw);
+            var contexts = productionContextCache.GetCapturableByMachine(machine.MachineCode);
             if (contexts.Count == 0)
             {
-                contexts = await repository.ListCapturableProductionContextsAsync(raw.Machine, cancellationToken);
+                contexts = await repository.ListCapturableProductionContextsAsync(machine.MachineCode, cancellationToken);
+            }
+
+            if (contexts.Count == 0)
+            {
+                items.Add(CreateNoContextItem(
+                    machine.MachineCode,
+                    hasCurrentRaw ? currentRaw!.RunState : OeeRunStates.Disconnect));
+                continue;
+            }
+
+            var effectiveRaw = currentRaw;
+            if (effectiveRaw is null)
+            {
+                effectiveRaw = await repository.GetLatestRawIntervalAsync(machine.MachineCode, cancellationToken);
             }
 
             foreach (var context in contexts)
             {
+                var state = hasCurrentRaw ? effectiveRaw!.RunState : OeeRunStates.Disconnect;
+                if (effectiveRaw is null || effectiveRaw.ReadAt < context.ActivePeriodStartAt)
+                {
+                    items.Add(CreateEmptyContextItem(context, state));
+                    skipped++;
+                    continue;
+                }
+
                 if (context.BaselineCapturedAt <= 0)
                 {
-                    SeedBaseline(context, raw, createdAt);
+                    SeedBaseline(context, effectiveRaw, createdAt);
                     await repository.SaveProductionContextAsync(context, cancellationToken);
                     productionContextCache.Upsert(context);
                     logger.LogInformation(
@@ -426,47 +462,23 @@ public sealed class RealtimeSnapshotBuilder(
                         context.Machine,
                         context.OrderId,
                         context.SessionId,
-                        raw.Id,
-                        raw.ReadAt);
+                        effectiveRaw.Id,
+                        effectiveRaw.ReadAt);
+                    items.Add(CreateEmptyContextItem(context, state));
                     skipped++;
                     continue;
                 }
 
-                var product = ReadPrimaryProduct(context.ProductsJson);
-                var goodQty = DeltaOrZero(raw.ShotOkTotal, context.BaselineShotOkTotal, raw.Machine, OeeSignalCodes.ShotOkCount);
-                var ngQty = DeltaOrZero(raw.ShotNgTotal, context.BaselineShotNgTotal, raw.Machine, OeeSignalCodes.ShotNgCount);
-                var runTime = DeltaOrZero(raw.RunTimeTotalSec, context.BaselineRunTimeTotalSec, raw.Machine, OeeSignalCodes.RunTimeTotal);
-                var stopTime = DeltaOrZero(raw.StopTimeTotalSec, context.BaselineStopTimeTotalSec, raw.Machine, OeeSignalCodes.StopTimeTotal);
-                var errorTime = DeltaOrZero(raw.ErrorTimeTotalSec, context.BaselineErrorTimeTotalSec, raw.Machine, OeeSignalCodes.ErrorTimeTotal);
-                var productionTime = Math.Max(0, createdAt - context.ActivePeriodStartAt);
-                var actualQty = goodQty + ngQty;
-                var cycleTimeSeconds = product.EffectiveCycleTime > 0
-                    ? product.EffectiveCycleTime
-                    : raw.CycleTimeMs > 0 ? raw.CycleTimeMs / 1000m : 0m;
-                var plannedQty = cycleTimeSeconds > 0
-                    ? Decimal.Floor(productionTime / cycleTimeSeconds) * product.Gain
-                    : 0m;
-                var availability = Percent(runTime, productionTime);
-                var performance = plannedQty > 0 ? Percent(actualQty, plannedQty) : 0m;
-                var quality = actualQty > 0 ? Percent(goodQty, actualQty) : 0m;
-                var oee = Decimal.Round(availability * performance * quality / 10000m, 6);
-                var totalQty = orderQuantityCache.GetCompletedQty(raw.Machine, context.OrderId) + actualQty;
-
-                var item = new RealtimeSnapshotItemPayload(
-                    MachineCode: raw.Machine,
-                    OrderId: context.OrderId,
-                    SessionId: context.SessionId,
-                    ProductCode: product.ProductId,
-                    MoldCode: product.MoldCode,
-                    MachineState: raw.RunState,
-                    ActualQty: actualQty,
-                    TotalQty: totalQty,
-                    PlannedQty: plannedQty,
-                    Availability: availability,
-                    Performance: performance,
-                    Quality: quality,
-                    Oee: oee,
-                    Extra: EmptyExtra());
+                var metricAt = hasCurrentRaw ? createdAt : effectiveRaw.ReadAt;
+                var item = CreateContextItem(
+                    context,
+                    effectiveRaw,
+                    metricAt,
+                    state,
+                    out var runTime,
+                    out var stopTime,
+                    out var errorTime,
+                    out var productionTime);
                 items.Add(item);
 
                 logger.LogInformation(
@@ -491,10 +503,94 @@ public sealed class RealtimeSnapshotBuilder(
         }
 
         return new RealtimeSnapshotBuildResult(
-            new RealtimeSnapshotBatchPayload(1, gatewayId, createdAt, items),
+            new RealtimeSnapshotBatchPayload(2, gatewayId, createdAt, items),
             rawIntervals.Count,
             skipped);
     }
+
+    private RealtimeSnapshotItemPayload CreateContextItem(
+        ProductionContext context,
+        PlcRawInterval raw,
+        long metricAt,
+        string state,
+        out long runTime,
+        out long stopTime,
+        out long errorTime,
+        out long productionTime)
+    {
+        var product = ReadPrimaryProduct(context.ProductsJson);
+        var goodQty = DeltaOrZero(raw.ShotOkTotal, context.BaselineShotOkTotal, raw.Machine, OeeSignalCodes.ShotOkCount);
+        var ngQty = DeltaOrZero(raw.ShotNgTotal, context.BaselineShotNgTotal, raw.Machine, OeeSignalCodes.ShotNgCount);
+        runTime = DeltaOrZero(raw.RunTimeTotalSec, context.BaselineRunTimeTotalSec, raw.Machine, OeeSignalCodes.RunTimeTotal);
+        stopTime = DeltaOrZero(raw.StopTimeTotalSec, context.BaselineStopTimeTotalSec, raw.Machine, OeeSignalCodes.StopTimeTotal);
+        errorTime = DeltaOrZero(raw.ErrorTimeTotalSec, context.BaselineErrorTimeTotalSec, raw.Machine, OeeSignalCodes.ErrorTimeTotal);
+        productionTime = Math.Max(0, metricAt - context.ActivePeriodStartAt);
+        var actualQty = goodQty + ngQty;
+        var cycleTimeSeconds = product.EffectiveCycleTime > 0
+            ? product.EffectiveCycleTime
+            : raw.CycleTimeMs > 0 ? raw.CycleTimeMs / 1000m : 0m;
+        var plannedQty = cycleTimeSeconds > 0
+            ? Decimal.Floor(productionTime / cycleTimeSeconds) * product.Gain
+            : 0m;
+        var availability = Percent(runTime, productionTime);
+        var performance = plannedQty > 0 ? Percent(actualQty, plannedQty) : 0m;
+        var quality = actualQty > 0 ? Percent(goodQty, actualQty) : 0m;
+        var oee = Decimal.Round(availability * performance * quality / 10000m, 6);
+        var totalQty = orderQuantityCache.GetCompletedQty(raw.Machine, context.OrderId) + actualQty;
+
+        return new RealtimeSnapshotItemPayload(
+            raw.Machine,
+            context.OrderId,
+            context.SessionId,
+            product.ProductId,
+            product.MoldCode,
+            state,
+            actualQty,
+            totalQty,
+            plannedQty,
+            availability,
+            performance,
+            quality,
+            oee,
+            EmptyExtra());
+    }
+
+    private RealtimeSnapshotItemPayload CreateEmptyContextItem(ProductionContext context, string state)
+    {
+        var product = ReadPrimaryProduct(context.ProductsJson);
+        return new RealtimeSnapshotItemPayload(
+            context.Machine,
+            context.OrderId,
+            context.SessionId,
+            product.ProductId,
+            product.MoldCode,
+            state,
+            0,
+            orderQuantityCache.GetCompletedQty(context.Machine, context.OrderId),
+            0,
+            0,
+            0,
+            0,
+            0,
+            EmptyExtra());
+    }
+
+    private static RealtimeSnapshotItemPayload CreateNoContextItem(string machineCode, string state) =>
+        new(
+            machineCode,
+            null,
+            null,
+            null,
+            null,
+            state,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            EmptyExtra());
 
     private static void SeedBaseline(ProductionContext context, PlcRawInterval raw, long updatedAt)
     {
@@ -722,17 +818,22 @@ public sealed class OeeLocalProcessingService(
 
         if (current.RealtimeSnapshotsEnabled)
         {
+            var retainedDedupeKeys = new List<string>(snapshot.Payload.Items.Count);
             foreach (var item in snapshot.Payload.Items)
             {
+                var dedupeKey = BuildRealtimeSnapshotDedupeKey(item);
                 await EnqueueAsync(
                     SyncOutboxTopics.RealtimeSnapshot,
-                    $"realtime_snapshot:{item.MachineCode}:{item.OrderId}:{item.SessionId}",
+                    dedupeKey,
                     MesSyncEndpointPaths.RealtimeSnapshots,
                     item,
                     createdAt,
                     cancellationToken);
+                retainedDedupeKeys.Add(dedupeKey);
                 enqueued++;
             }
+
+            await repository.RemoveStaleRealtimeSnapshotMessagesAsync(retainedDedupeKeys, cancellationToken);
         }
 
         if (current.ProductionMetricsEnabled)
@@ -783,6 +884,11 @@ public sealed class OeeLocalProcessingService(
             UpdatedAt = createdAt
         }, cancellationToken);
     }
+
+    private static string BuildRealtimeSnapshotDedupeKey(RealtimeSnapshotItemPayload item) =>
+        string.IsNullOrWhiteSpace(item.SessionId)
+            ? $"realtime_snapshot:{item.MachineCode}:no-context"
+            : $"realtime_snapshot:{item.MachineCode}:{item.OrderId}:{item.SessionId}";
 
     private static MachineStateEventItemPayload ToPayloadItem(MachineStateEvent stateEvent) =>
         new(
@@ -1247,8 +1353,9 @@ public sealed class MesSyncOutboxDispatcher(
 
     private static string BuildBatchPayload(string gatewayId, long createdAt, IEnumerable<SyncOutboxMessage> messages)
     {
+        var messageList = messages.ToList();
         var items = new JsonArray();
-        foreach (var message in messages)
+        foreach (var message in messageList)
         {
             var node = JsonNode.Parse(message.PayloadJson);
             if (node is not null)
@@ -1259,7 +1366,8 @@ public sealed class MesSyncOutboxDispatcher(
 
         var payload = new JsonObject
         {
-            ["schema_version"] = 1,
+            ["schema_version"] = messageList.Any(message =>
+                message.Topic.Equals(SyncOutboxTopics.RealtimeSnapshot, StringComparison.OrdinalIgnoreCase)) ? 2 : 1,
             ["gateway_id"] = gatewayId,
             ["created_at"] = createdAt,
             ["items"] = items

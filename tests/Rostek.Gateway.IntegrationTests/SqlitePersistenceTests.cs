@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Rostek.Gateway.Application.MachineTemplates;
 using Rostek.Gateway.Application.Machines;
+using Rostek.Gateway.Application.MesSync;
 using Rostek.Gateway.Application.Oee;
 using Rostek.Gateway.Contracts.Runtime;
 using Rostek.Gateway.Domain.Entities;
@@ -208,6 +209,36 @@ public sealed class SqlitePersistenceTests
     }
 
     [Fact]
+    public async Task Oee_repository_removes_only_stale_unsynced_realtime_messages()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        await using var db = CreateOeeContext(connection);
+        await db.Database.EnsureCreatedAsync();
+        var repository = new EfCoreOeeLocalRepository(db);
+        const string retainedKey = "realtime_snapshot:M16-01:no-context";
+
+        await repository.UpsertSyncOutboxMessageAsync(
+            Outbox(retainedKey, SyncOutboxTopics.RealtimeSnapshot),
+            CancellationToken.None);
+        await repository.UpsertSyncOutboxMessageAsync(
+            Outbox("realtime_snapshot:M16-01:ORDER-1:SESSION-1", SyncOutboxTopics.RealtimeSnapshot),
+            CancellationToken.None);
+        await repository.UpsertSyncOutboxMessageAsync(
+            Outbox("machine_state_event:event-1", SyncOutboxTopics.MachineStateEvent),
+            CancellationToken.None);
+
+        await repository.RemoveStaleRealtimeSnapshotMessagesAsync([retainedKey], CancellationToken.None);
+
+        var messages = await db.SyncOutboxMessages.AsNoTracking().ToListAsync();
+        Assert.Contains(messages, message => message.DedupeKey == retainedKey);
+        Assert.DoesNotContain(
+            messages,
+            message => message.DedupeKey == "realtime_snapshot:M16-01:ORDER-1:SESSION-1");
+        Assert.Contains(messages, message => message.DedupeKey == "machine_state_event:event-1");
+    }
+
+    [Fact]
     public async Task Unique_template_signal_code_is_enforced_per_template()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
@@ -389,6 +420,21 @@ public sealed class SqlitePersistenceTests
         command.CommandText = sql;
         await command.ExecuteNonQueryAsync();
     }
+
+    private static SyncOutboxMessage Outbox(string dedupeKey, string topic) =>
+        new()
+        {
+            Topic = topic,
+            DedupeKey = dedupeKey,
+            EndpointPath = topic == SyncOutboxTopics.RealtimeSnapshot
+                ? MesSyncEndpointPaths.RealtimeSnapshots
+                : MesSyncEndpointPaths.MachineStateEvents,
+            PayloadJson = "{}",
+            Status = SyncOutboxStatuses.Pending,
+            NextAttemptAt = 0,
+            CreatedAt = 1,
+            UpdatedAt = 1
+        };
 
     private static PlcRawInterval Raw(string machine, long readAt, long shotOkTotal, long runTimeTotalSec = 0) =>
         new()

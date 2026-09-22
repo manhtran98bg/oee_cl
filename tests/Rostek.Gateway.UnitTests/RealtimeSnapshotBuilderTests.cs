@@ -11,7 +11,7 @@ namespace Rostek.Gateway.UnitTests;
 public sealed class RealtimeSnapshotBuilderTests
 {
     [Fact]
-    public async Task Build_seeds_missing_context_baseline_and_skips_first_item()
+    public async Task Build_seeds_missing_context_baseline_and_emits_zero_item()
     {
         var repository = new InMemoryOeeLocalRepository();
         var context = await repository.EnsureTestProductionContextAsync("M16-01", 100, CancellationToken.None);
@@ -21,10 +21,67 @@ public sealed class RealtimeSnapshotBuilderTests
 
         var result = await builder.BuildAsync("GW-M16-01", [raw], createdAt: 105, CancellationToken.None);
 
-        Assert.Empty(result.Payload.Items);
+        var item = Assert.Single(result.Payload.Items);
+        Assert.Equal(2, result.Payload.SchemaVersion);
+        Assert.Equal("TEST_ORDER", item.OrderId);
+        Assert.Equal(0, item.ActualQty);
+        Assert.Equal(0, item.PlannedQty);
         Assert.Equal(raw.Id, repository.Contexts.Single().BaselineRawId);
         Assert.Equal(105, repository.Contexts.Single().BaselineCapturedAt);
         Assert.Equal(10, repository.Contexts.Single().BaselineShotOkTotal);
+    }
+
+    [Fact]
+    public async Task Build_emits_online_machine_without_production_context()
+    {
+        var repository = new InMemoryOeeLocalRepository();
+        var builder = CreateBuilder(repository, new ProductionContextCache());
+
+        var result = await builder.BuildAsync(
+            "GW-M16-01",
+            [Raw(readAt: 110, shotOk: 10, shotNg: 1, runTime: 10, stopTime: 0, errorTime: 0)],
+            createdAt: 110,
+            CancellationToken.None);
+
+        var item = Assert.Single(result.Payload.Items);
+        Assert.Equal("M16-01", item.MachineCode);
+        Assert.Null(item.OrderId);
+        Assert.Null(item.SessionId);
+        Assert.Null(item.ProductCode);
+        Assert.Equal(OeeRunStates.Run, item.MachineState);
+        Assert.Equal(0, item.ActualQty);
+        Assert.Equal(0, item.Oee);
+    }
+
+    [Fact]
+    public async Task Build_emits_disconnect_for_enabled_machine_without_runtime_snapshot()
+    {
+        var repository = new InMemoryOeeLocalRepository();
+        var builder = CreateBuilder(repository, new ProductionContextCache());
+
+        var result = await builder.BuildAsync("GW-M16-01", [], createdAt: 110, CancellationToken.None);
+
+        var item = Assert.Single(result.Payload.Items);
+        Assert.Null(item.OrderId);
+        Assert.Equal(OeeRunStates.Disconnect, item.MachineState);
+    }
+
+    [Fact]
+    public async Task Build_does_not_emit_disabled_machine()
+    {
+        var repository = new InMemoryOeeLocalRepository();
+        var builder = CreateBuilder(
+            repository,
+            new ProductionContextCache(),
+            runtimeProvider: new TestRuntimeConfigurationProvider(("M16-01", false)));
+
+        var result = await builder.BuildAsync(
+            "GW-M16-01",
+            [Raw(readAt: 110, shotOk: 10, shotNg: 1, runTime: 10, stopTime: 0, errorTime: 0)],
+            createdAt: 110,
+            CancellationToken.None);
+
+        Assert.Empty(result.Payload.Items);
     }
 
     [Fact]
@@ -99,12 +156,36 @@ public sealed class RealtimeSnapshotBuilderTests
     }
 
     [Fact]
+    public async Task Build_freezes_active_session_metrics_when_current_raw_is_missing()
+    {
+        var repository = new InMemoryOeeLocalRepository();
+        var context = await repository.EnsureTestProductionContextAsync("M16-01", 100, CancellationToken.None);
+        context.ProductsJson = """[{"product_id":"SP-001","gain":1.0,"cycle_time":10.0,"target":100}]""";
+        context.BaselineRawId = "baseline";
+        context.BaselineCapturedAt = 100;
+        context.BaselineShotOkTotal = 100;
+        context.BaselineRunTimeTotalSec = 10;
+        await repository.SaveProductionContextAsync(context, CancellationToken.None);
+        await repository.InsertMissingRawIntervalsAsync(
+            [Raw(readAt: 110, shotOk: 105, shotNg: 0, runTime: 20, stopTime: 0, errorTime: 0)],
+            CancellationToken.None);
+        var builder = CreateBuilder(repository, LoadedCache(repository));
+
+        var result = await builder.BuildAsync("GW-M16-01", [], createdAt: 200, CancellationToken.None);
+
+        var item = Assert.Single(result.Payload.Items);
+        Assert.Equal(OeeRunStates.Disconnect, item.MachineState);
+        Assert.Equal(5, item.ActualQty);
+        Assert.Equal(1, item.PlannedQty);
+    }
+
+    [Fact]
     public async Task Sync_drops_batch_when_client_fails()
     {
         var raw = Raw(readAt: 110, shotOk: 120, shotNg: 8, runTime: 18, stopTime: 4, errorTime: 2);
         var capture = new StubRawDataCaptureService([raw]);
         var snapshot = new RealtimeSnapshotBuildResult(new RealtimeSnapshotBatchPayload(
-            1,
+            2,
             "GW-M16-01",
             110,
             [new RealtimeSnapshotItemPayload("M16-01", "TEST_ORDER", "SESSION", "SP", null, "run", 1, 1, 1, 10, 100, 100, 10, EmptyExtra())]),
@@ -128,8 +209,14 @@ public sealed class RealtimeSnapshotBuilderTests
     private static RealtimeSnapshotBuilder CreateBuilder(
         InMemoryOeeLocalRepository repository,
         ProductionContextCache cache,
-        IOrderQuantityCache? orderQuantityCache = null) =>
-        new(repository, cache, orderQuantityCache ?? new OrderQuantityCache(), NullLogger<RealtimeSnapshotBuilder>.Instance);
+        IOrderQuantityCache? orderQuantityCache = null,
+        TestRuntimeConfigurationProvider? runtimeProvider = null) =>
+        new(
+            repository,
+            cache,
+            orderQuantityCache ?? new OrderQuantityCache(),
+            runtimeProvider ?? new TestRuntimeConfigurationProvider(("M16-01", true)),
+            NullLogger<RealtimeSnapshotBuilder>.Instance);
 
     private static ProductionContextCache LoadedCache(InMemoryOeeLocalRepository repository)
     {

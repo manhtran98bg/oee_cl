@@ -141,9 +141,9 @@ public sealed record RealtimeSnapshotBatchPayload(
 
 public sealed record RealtimeSnapshotItemPayload(
     [property: JsonPropertyName("machine_code")] string MachineCode,
-    [property: JsonPropertyName("order_id")] string OrderId,
-    [property: JsonPropertyName("session_id")] string SessionId,
-    [property: JsonPropertyName("product_code")] string ProductCode,
+    [property: JsonPropertyName("order_id")] string? OrderId,
+    [property: JsonPropertyName("session_id")] string? SessionId,
+    [property: JsonPropertyName("product_code")] string? ProductCode,
     [property: JsonPropertyName("mold_code")] string? MoldCode,
     [property: JsonPropertyName("machine_state")] string MachineState,
     [property: JsonPropertyName("actual_qty")] long ActualQty,

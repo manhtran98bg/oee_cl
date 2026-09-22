@@ -68,16 +68,17 @@ public sealed class RawDataCaptureService(
             contexts = [context];
         }
 
-        if (contexts.Count == 0)
-        {
-            return null;
-        }
-
         var primaryContext = contexts
             .OrderBy(context => context.OrderId, StringComparer.OrdinalIgnoreCase)
             .ThenBy(context => context.SessionId, StringComparer.OrdinalIgnoreCase)
-            .First();
-        await repository.EnsureProductionPeriodAsync(primaryContext, primaryContext.ActivePeriodStartAt > 0 ? primaryContext.ActivePeriodStartAt : readAt, cancellationToken);
+            .FirstOrDefault();
+        if (primaryContext is not null)
+        {
+            await repository.EnsureProductionPeriodAsync(
+                primaryContext,
+                primaryContext.ActivePeriodStartAt > 0 ? primaryContext.ActivePeriodStartAt : readAt,
+                cancellationToken);
+        }
 
         var signals = snapshot.Values
             .GroupBy(value => value.SignalCode, StringComparer.OrdinalIgnoreCase)
@@ -120,7 +121,7 @@ public sealed class RawDataCaptureService(
         {
             Machine = snapshot.MachineCode,
             ReadAt = readAt,
-            PlcPeriodIndex = primaryContext.CurrentPlcPeriodIndex,
+            PlcPeriodIndex = primaryContext?.CurrentPlcPeriodIndex ?? 0,
             RunState = runState,
             ShotOkTotal = ReadInt64(signals, OeeSignalCodes.ShotOkCount) ?? 0,
             ShotNgTotal = ReadInt64(signals, OeeSignalCodes.ShotNgCount) ?? 0,
@@ -128,7 +129,7 @@ public sealed class RawDataCaptureService(
             StopTimeTotalSec = gatewayTotals?.StopTimeTotalSec ?? deviceStopTime ?? 0,
             ErrorTimeTotalSec = gatewayTotals?.ErrorTimeTotalSec ?? deviceErrorTime ?? 0,
             CycleTimeMs = ReadInt32(signals, OeeSignalCodes.CycleTimeMs) ?? 0,
-            PeriodActive = 1
+            PeriodActive = primaryContext is null ? 0 : 1
         };
     }
 

@@ -23,7 +23,12 @@ public sealed class SyncOutboxTests
         var processor = new OeeLocalProcessingService(
             Options.Create(new MesSyncOptions()),
             repository,
-            new RealtimeSnapshotBuilder(repository, cache, new OrderQuantityCache(), NullLogger<RealtimeSnapshotBuilder>.Instance),
+            new RealtimeSnapshotBuilder(
+                repository,
+                cache,
+                new OrderQuantityCache(),
+                new TestRuntimeConfigurationProvider(("M16-01", true)),
+                NullLogger<RealtimeSnapshotBuilder>.Instance),
             new MachineStateEventBuilder(
                 repository,
                 cache,
@@ -60,7 +65,12 @@ public sealed class SyncOutboxTests
                 ProductionMetricsEnabled = false
             }),
             repository,
-            new RealtimeSnapshotBuilder(repository, cache, new OrderQuantityCache(), NullLogger<RealtimeSnapshotBuilder>.Instance),
+            new RealtimeSnapshotBuilder(
+                repository,
+                cache,
+                new OrderQuantityCache(),
+                new TestRuntimeConfigurationProvider(("M16-01", true)),
+                NullLogger<RealtimeSnapshotBuilder>.Instance),
             new MachineStateEventBuilder(
                 repository,
                 cache,
@@ -80,6 +90,44 @@ public sealed class SyncOutboxTests
     }
 
     [Fact]
+    public async Task Local_processing_removes_stale_no_context_message_when_session_starts()
+    {
+        var repository = new InMemoryOeeLocalRepository();
+        await repository.UpsertSyncOutboxMessageAsync(
+            RealtimeMessage("realtime_snapshot:M16-01:no-context"),
+            CancellationToken.None);
+        var context = await repository.EnsureTestProductionContextAsync("M16-01", 100, CancellationToken.None);
+        context.BaselineRawId = "baseline";
+        context.BaselineCapturedAt = 100;
+        await repository.SaveProductionContextAsync(context, CancellationToken.None);
+        var processor = CreateProcessor(repository, LoadedCache(repository));
+
+        await processor.ProcessAsync("GW-M16-01", [Raw(105)], 105, CancellationToken.None);
+
+        Assert.DoesNotContain(repository.SyncOutboxMessages, message =>
+            message.DedupeKey == "realtime_snapshot:M16-01:no-context");
+        Assert.Contains(repository.SyncOutboxMessages, message =>
+            message.DedupeKey == $"realtime_snapshot:M16-01:{context.OrderId}:{context.SessionId}");
+    }
+
+    [Fact]
+    public async Task Local_processing_removes_stale_session_message_when_machine_has_no_context()
+    {
+        var repository = new InMemoryOeeLocalRepository();
+        await repository.UpsertSyncOutboxMessageAsync(
+            RealtimeMessage("realtime_snapshot:M16-01:ORDER-1:SESSION-1"),
+            CancellationToken.None);
+        var processor = CreateProcessor(repository, new ProductionContextCache());
+
+        await processor.ProcessAsync("GW-M16-01", [Raw(105)], 105, CancellationToken.None);
+
+        Assert.DoesNotContain(repository.SyncOutboxMessages, message =>
+            message.DedupeKey == "realtime_snapshot:M16-01:ORDER-1:SESSION-1");
+        Assert.Contains(repository.SyncOutboxMessages, message =>
+            message.DedupeKey == "realtime_snapshot:M16-01:no-context");
+    }
+
+    [Fact]
     public async Task Dispatcher_marks_messages_synced_when_http_succeeds()
     {
         var repository = new InMemoryOeeLocalRepository();
@@ -96,8 +144,29 @@ public sealed class SyncOutboxTests
         Assert.Equal(1, result.SentCount);
         Assert.Equal(SyncOutboxStatuses.Synced, repository.SyncOutboxMessages.Single().Status);
         using var json = JsonDocument.Parse(httpClient.PayloadJson!);
+        Assert.Equal(1, json.RootElement.GetProperty("schema_version").GetInt32());
         Assert.Equal("GW-M16-01", json.RootElement.GetProperty("gateway_id").GetString());
         Assert.Equal(1, json.RootElement.GetProperty("items").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task Dispatcher_uses_schema_version_two_for_realtime_snapshots()
+    {
+        var repository = new InMemoryOeeLocalRepository();
+        await repository.UpsertSyncOutboxMessageAsync(
+            RealtimeMessage("realtime_snapshot:M16-01:no-context"),
+            CancellationToken.None);
+        var httpClient = new RecordingOutboxHttpClient();
+        var dispatcher = new MesSyncOutboxDispatcher(
+            Options.Create(new MesSyncOptions { BatchSize = 100 }),
+            repository,
+            httpClient,
+            NullLogger<MesSyncOutboxDispatcher>.Instance);
+
+        await dispatcher.DispatchPendingAsync("GW-M16-01", [SyncOutboxTopics.RealtimeSnapshot], CancellationToken.None);
+
+        using var json = JsonDocument.Parse(httpClient.PayloadJson!);
+        Assert.Equal(2, json.RootElement.GetProperty("schema_version").GetInt32());
     }
 
     [Fact]
@@ -127,6 +196,30 @@ public sealed class SyncOutboxTests
         return cache;
     }
 
+    private static OeeLocalProcessingService CreateProcessor(
+        InMemoryOeeLocalRepository repository,
+        ProductionContextCache cache) =>
+        new(
+            Options.Create(new MesSyncOptions()),
+            repository,
+            new RealtimeSnapshotBuilder(
+                repository,
+                cache,
+                new OrderQuantityCache(),
+                new TestRuntimeConfigurationProvider(("M16-01", true)),
+                NullLogger<RealtimeSnapshotBuilder>.Instance),
+            new MachineStateEventBuilder(
+                repository,
+                cache,
+                Options.Create(new MesSyncOptions()),
+                NullLogger<MachineStateEventBuilder>.Instance),
+            new ProductionMetricBuilder(
+                repository,
+                cache,
+                Options.Create(new MesSyncOptions()),
+                NullLogger<ProductionMetricBuilder>.Instance),
+            NullLogger<OeeLocalProcessingService>.Instance);
+
     private static PlcRawInterval Raw(long readAt) =>
         new()
         {
@@ -148,6 +241,19 @@ public sealed class SyncOutboxTests
             DedupeKey = "machine_state_event:event-1",
             EndpointPath = MesSyncEndpointPaths.MachineStateEvents,
             PayloadJson = """{"event_id":"event-1","machine_code":"M16-01"}""",
+            Status = SyncOutboxStatuses.Pending,
+            NextAttemptAt = 0,
+            CreatedAt = 1,
+            UpdatedAt = 1
+        };
+
+    private static SyncOutboxMessage RealtimeMessage(string dedupeKey) =>
+        new()
+        {
+            Topic = SyncOutboxTopics.RealtimeSnapshot,
+            DedupeKey = dedupeKey,
+            EndpointPath = MesSyncEndpointPaths.RealtimeSnapshots,
+            PayloadJson = """{"machine_code":"M16-01","order_id":null,"session_id":null}""",
             Status = SyncOutboxStatuses.Pending,
             NextAttemptAt = 0,
             CreatedAt = 1,

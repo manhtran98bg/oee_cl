@@ -24,6 +24,7 @@ public interface IOeeLocalRepository
     Task<MachineStateEvent?> GetOpenMachineStateEventAsync(string machine, string orderId, string sessionId, CancellationToken cancellationToken);
     Task SaveMachineStateEventsAsync(IReadOnlyCollection<MachineStateEvent> stateEvents, CancellationToken cancellationToken);
     Task UpsertSyncOutboxMessageAsync(SyncOutboxMessage message, CancellationToken cancellationToken);
+    Task RemoveStaleRealtimeSnapshotMessagesAsync(IReadOnlyCollection<string> retainedDedupeKeys, CancellationToken cancellationToken);
     Task<IReadOnlyList<SyncOutboxMessage>> TakePendingSyncOutboxMessagesAsync(long now, int batchSize, IReadOnlyCollection<string> topics, CancellationToken cancellationToken);
     Task MarkSyncOutboxMessagesSucceededAsync(IReadOnlyCollection<long> ids, long syncedAt, CancellationToken cancellationToken);
     Task MarkSyncOutboxMessagesFailedAsync(IReadOnlyCollection<long> ids, string error, long nextAttemptAt, CancellationToken cancellationToken);
