@@ -40,6 +40,8 @@ public sealed class MachineTemplateService(
                 Net100ServerHost = template.Net100ServerHost,
                 Net100ServerPort = template.Net100ServerPort,
                 Net100BasePath = template.Net100BasePath,
+                Net100AuthenticationMode = template.Net100AuthenticationMode,
+                Net100CredentialReference = template.Net100CredentialReference,
                 Description = template.Description,
                 Enabled = template.Enabled
             };
@@ -112,6 +114,17 @@ public sealed class MachineTemplateService(
             {
                 return GatewayResult<Guid>.Fail("NET100 server port must be between 1 and 65535.");
             }
+
+            var authenticationMode = NormalizeAuthenticationMode(input.Net100AuthenticationMode);
+            if (authenticationMode is not ("NONE" or "BASIC"))
+            {
+                return GatewayResult<Guid>.Fail("NET100 authentication mode must be NONE or BASIC.");
+            }
+
+            if (authenticationMode == "BASIC" && string.IsNullOrWhiteSpace(input.Net100CredentialReference))
+            {
+                return GatewayResult<Guid>.Fail("NET100 credential reference is required for BASIC authentication.");
+            }
         }
 
         if (await repository.TemplateCodeExistsAsync(code, input.Id, cancellationToken))
@@ -148,6 +161,13 @@ public sealed class MachineTemplateService(
         template.Net100BasePath = input.Protocol == GatewayProtocol.Net100Http
             ? Net100Configuration.NormalizeBasePath(input.Net100BasePath)
             : Net100Configuration.DefaultBasePath;
+        template.Net100AuthenticationMode = input.Protocol == GatewayProtocol.Net100Http
+            ? NormalizeAuthenticationMode(input.Net100AuthenticationMode)
+            : "NONE";
+        template.Net100CredentialReference = input.Protocol == GatewayProtocol.Net100Http &&
+                                             template.Net100AuthenticationMode == "BASIC"
+            ? NullIfWhiteSpace(input.Net100CredentialReference)
+            : null;
         template.Description = NullIfWhiteSpace(input.Description);
         template.Enabled = input.Enabled;
 
@@ -193,6 +213,8 @@ public sealed class MachineTemplateService(
             Net100ServerHost = source.Net100ServerHost,
             Net100ServerPort = source.Net100ServerPort,
             Net100BasePath = source.Net100BasePath,
+            Net100AuthenticationMode = source.Net100AuthenticationMode,
+            Net100CredentialReference = source.Net100CredentialReference,
             Description = source.Description,
             Enabled = source.Enabled,
             CreatedAtUtc = now,
@@ -353,5 +375,7 @@ public sealed class MachineTemplateService(
         };
 
     private static string NormalizeCode(string code) => code.Trim().ToUpperInvariant();
+    private static string NormalizeAuthenticationMode(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? "NONE" : value.Trim().ToUpperInvariant();
     private static string? NullIfWhiteSpace(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 }

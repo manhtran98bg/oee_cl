@@ -14,6 +14,8 @@ public sealed class MachineTemplate
     public string? Net100ServerHost { get; set; }
     public int Net100ServerPort { get; set; } = 80;
     public string Net100BasePath { get; set; } = "/net100";
+    public string Net100AuthenticationMode { get; set; } = "NONE";
+    public string? Net100CredentialReference { get; set; }
     public string? Description { get; set; }
     public bool Enabled { get; set; } = true;
     public DateTimeOffset CreatedAtUtc { get; set; } = DateTimeOffset.UtcNow;

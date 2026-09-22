@@ -1,3 +1,8 @@
+using System.Net.Http.Headers;
+using System.Text;
+using Microsoft.Extensions.Options;
+using Rostek.Gateway.Contracts.Runtime;
+
 namespace Rostek.Gateway.Runtime.Net100;
 
 public interface INet100ClientAdapter : IAsyncDisposable
@@ -7,24 +12,60 @@ public interface INet100ClientAdapter : IAsyncDisposable
 
 public interface INet100ClientAdapterFactory
 {
-    INet100ClientAdapter Create(Uri baseAddress);
+    INet100ClientAdapter Create(Uri baseAddress, string? authenticationMode, string? credentialReference);
 }
 
-public sealed class Net100ClientAdapterFactory : INet100ClientAdapterFactory
+public sealed class Net100ClientAdapterFactory(IOptions<Net100Options> options) : INet100ClientAdapterFactory
 {
-    public INet100ClientAdapter Create(Uri baseAddress) => new Net100ClientAdapter(baseAddress);
+    public INet100ClientAdapter Create(Uri baseAddress, string? authenticationMode, string? credentialReference)
+    {
+        var mode = string.IsNullOrWhiteSpace(authenticationMode)
+            ? "NONE"
+            : authenticationMode.Trim().ToUpperInvariant();
+        if (mode == "NONE")
+        {
+            return new Net100ClientAdapter(baseAddress);
+        }
+
+        if (mode != "BASIC")
+        {
+            throw new InvalidOperationException($"Unsupported NET100 authentication mode '{mode}'.");
+        }
+
+        if (string.IsNullOrWhiteSpace(credentialReference))
+        {
+            throw new InvalidOperationException("NET100 Basic authentication requires a credential reference.");
+        }
+
+        var credential = options.Value.FindCredential(credentialReference.Trim());
+        if (credential is null || string.IsNullOrWhiteSpace(credential.Username))
+        {
+            throw new InvalidOperationException($"NET100 credential reference '{credentialReference.Trim()}' is not configured.");
+        }
+
+        return new Net100ClientAdapter(baseAddress, credential.Username, credential.Password);
+    }
 }
 
 public sealed class Net100ClientAdapter : INet100ClientAdapter
 {
     private readonly HttpClient _httpClient;
 
-    public Net100ClientAdapter(Uri baseAddress, HttpMessageHandler? handler = null)
+    public Net100ClientAdapter(
+        Uri baseAddress,
+        string? username = null,
+        string? password = null,
+        HttpMessageHandler? handler = null)
     {
         var normalized = new Uri(baseAddress.AbsoluteUri.TrimEnd('/') + "/", UriKind.Absolute);
         _httpClient = handler is null ? new HttpClient() : new HttpClient(handler, disposeHandler: true);
         _httpClient.BaseAddress = normalized;
         _httpClient.Timeout = Timeout.InfiniteTimeSpan;
+        if (!string.IsNullOrWhiteSpace(username))
+        {
+            var encodedCredential = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{username}:{password ?? string.Empty}"));
+            _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", encodedCredential);
+        }
     }
 
     public async Task<string> ReadLiveAsync(string machineAddress, int timeoutMs, CancellationToken cancellationToken)

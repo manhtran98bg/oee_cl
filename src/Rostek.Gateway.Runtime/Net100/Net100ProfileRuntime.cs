@@ -51,7 +51,10 @@ public sealed class Net100ProfileRuntime : IAsyncDisposable
         ProfileId = profileId;
         ServerEndpoint = machines[0].Connection.EndpointUrl
             ?? throw new InvalidOperationException("NET100 server endpoint is required.");
-        _adapter = adapterFactory.Create(new Uri(ServerEndpoint, UriKind.Absolute));
+        _adapter = adapterFactory.Create(
+            new Uri(ServerEndpoint, UriKind.Absolute),
+            machines[0].Connection.AuthenticationMode,
+            machines[0].Connection.CredentialReference);
         _liveParser = liveParser;
         _valueStore = valueStore;
         _options = options;

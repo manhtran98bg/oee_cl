@@ -83,6 +83,8 @@ public sealed class SqlitePersistenceTests
         Assert.Contains("Net100ServerHost", await ReadColumnNamesAsync(connection, "MachineTemplates"));
         Assert.Contains("Net100ServerPort", await ReadColumnNamesAsync(connection, "MachineTemplates"));
         Assert.Contains("Net100BasePath", await ReadColumnNamesAsync(connection, "MachineTemplates"));
+        Assert.Contains("Net100AuthenticationMode", await ReadColumnNamesAsync(connection, "MachineTemplates"));
+        Assert.Contains("Net100CredentialReference", await ReadColumnNamesAsync(connection, "MachineTemplates"));
     }
 
     [Fact]
@@ -242,7 +244,9 @@ public sealed class SqlitePersistenceTests
                 Protocol = GatewayProtocol.Net100Http,
                 Net100ServerHost = "172.20.20.5",
                 Net100ServerPort = 80,
-                Net100BasePath = "/net100"
+                Net100BasePath = "/net100",
+                Net100AuthenticationMode = "BASIC",
+                Net100CredentialReference = "jsw-main"
             },
             null,
             CancellationToken.None);
@@ -252,6 +256,8 @@ public sealed class SqlitePersistenceTests
         Assert.NotNull(template);
         Assert.Equal("172.20.20.5", template!.Net100ServerHost);
         Assert.Equal(80, template.Net100ServerPort);
+        Assert.Equal("BASIC", template.Net100AuthenticationMode);
+        Assert.Equal("jsw-main", template.Net100CredentialReference);
         Assert.Equal(5, template.Signals.Count);
         Assert.Contains(template.Signals, signal => signal.SignalCode == "SHOT_OK_COUNT" && signal.SourceAddress == "live.shot_no");
         Assert.DoesNotContain(template.Signals, signal => signal.SignalCode == "SHOT_NG_COUNT");

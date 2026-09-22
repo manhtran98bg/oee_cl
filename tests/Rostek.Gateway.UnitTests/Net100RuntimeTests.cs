@@ -1,4 +1,7 @@
 using System.Collections.Concurrent;
+using System.Net;
+using System.Net.Http.Headers;
+using System.Text;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Rostek.Gateway.Contracts.Configuration;
@@ -50,6 +53,24 @@ public sealed class Net100RuntimeTests
     public void Machine_state_mapping_matches_jsw_rules(string status, bool alarm, string expected)
     {
         Assert.Equal(expected, Net100ProfileRuntime.NormalizeMachineState(status, alarm));
+    }
+
+    [Fact]
+    public async Task Client_adapter_sends_basic_authorization_header()
+    {
+        var handler = new CapturingHttpMessageHandler(LiveXml);
+        await using var adapter = new Net100ClientAdapter(
+            new Uri("http://172.20.20.5/net100"),
+            "test-user",
+            "test-password",
+            handler);
+
+        await adapter.ReadLiveAsync("172.20.20.11", 1000, CancellationToken.None);
+
+        Assert.Equal("Basic", handler.Authorization?.Scheme);
+        Assert.Equal(
+            Convert.ToBase64String(Encoding.UTF8.GetBytes("test-user:test-password")),
+            handler.Authorization?.Parameter);
     }
 
     [Fact]
@@ -137,7 +158,7 @@ public sealed class Net100RuntimeTests
         public ConcurrentBag<string> Addresses { get; } = [];
         public TaskCompletionSource ReadsCompleted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public INet100ClientAdapter Create(Uri baseAddress)
+        public INet100ClientAdapter Create(Uri baseAddress, string? authenticationMode, string? credentialReference)
         {
             CreateCount++;
             return new FakeNet100Adapter(this, responseXml, expectedReads);
@@ -157,6 +178,20 @@ public sealed class Net100RuntimeTests
             }
 
             public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class CapturingHttpMessageHandler(string responseXml) : HttpMessageHandler
+    {
+        public AuthenticationHeaderValue? Authorization { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Authorization = request.Headers.Authorization;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(responseXml)
+            });
         }
     }
 }

@@ -32,6 +32,7 @@ builder.Services.PostConfigure<GatewayOptions>(options =>
     options.ExportDirectory = ResolveGatewayPath(externalAppSettings.GatewayHomePath, options.ExportDirectory, "exports");
 });
 builder.Services.Configure<RuntimeOptions>(builder.Configuration.GetSection("Runtime"));
+builder.Services.Configure<Net100Options>(builder.Configuration.GetSection("Net100"));
 builder.Services.Configure<MesSyncOptions>(builder.Configuration.GetSection("MesSync"));
 builder.Services.AddRazorPages();
 builder.Services.AddAntiforgery();

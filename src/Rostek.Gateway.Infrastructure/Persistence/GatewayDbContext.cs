@@ -34,6 +34,8 @@ public sealed class GatewayDbContext(DbContextOptions<GatewayDbContext> options)
             entity.Property(template => template.Protocol).HasConversion<string>().HasMaxLength(50).IsRequired();
             entity.Property(template => template.Net100ServerHost).HasMaxLength(255);
             entity.Property(template => template.Net100BasePath).HasMaxLength(255).IsRequired();
+            entity.Property(template => template.Net100AuthenticationMode).HasMaxLength(20).IsRequired();
+            entity.Property(template => template.Net100CredentialReference).HasMaxLength(100);
             entity.HasIndex(template => template.Code).IsUnique();
             entity.HasMany(template => template.Signals).WithOne(signal => signal.Template).HasForeignKey(signal => signal.TemplateId).OnDelete(DeleteBehavior.Cascade);
         });

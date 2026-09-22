@@ -104,6 +104,18 @@ public sealed class ConfigurationValidator(IOptions<RuntimeOptions> runtimeOptio
             {
                 AddError(issues, "NET100_PORT_INVALID", "NET100 server port must be between 1 and 65535.", machine.MachineCode, null, "Port");
             }
+
+            var authenticationMode = string.IsNullOrWhiteSpace(machine.Connection.AuthenticationMode)
+                ? "NONE"
+                : machine.Connection.AuthenticationMode.Trim().ToUpperInvariant();
+            if (authenticationMode is not ("NONE" or "BASIC"))
+            {
+                AddError(issues, "NET100_AUTH_MODE_UNSUPPORTED", "NET100 authentication mode must be NONE or BASIC.", machine.MachineCode, null, "AuthenticationMode");
+            }
+            else if (authenticationMode == "BASIC" && string.IsNullOrWhiteSpace(machine.Connection.CredentialReference))
+            {
+                AddError(issues, "NET100_CREDENTIAL_REFERENCE_REQUIRED", "NET100 credential reference is required when Basic authentication is enabled.", machine.MachineCode, null, "CredentialReference");
+            }
         }
     }
 

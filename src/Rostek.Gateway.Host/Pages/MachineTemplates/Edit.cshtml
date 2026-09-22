@@ -14,6 +14,18 @@
         <div class="col-md-5"><label class="form-label">NET100 Server IP / Host</label><input asp-for="Input.Net100ServerHost" class="form-control" placeholder="172.20.20.5" /></div>
         <div class="col-md-2"><label class="form-label">NET100 Port</label><input asp-for="Input.Net100ServerPort" class="form-control" /></div>
         <div class="col-md-3"><label class="form-label">NET100 Base Path</label><input asp-for="Input.Net100BasePath" class="form-control" placeholder="/net100" /></div>
+        <div class="col-md-2">
+            <label class="form-label">Authentication</label>
+            <select asp-for="Input.Net100AuthenticationMode" class="form-select" id="net100AuthenticationMode">
+                <option value="NONE">None</option>
+                <option value="BASIC">Basic</option>
+            </select>
+        </div>
+        <div class="col-md-5" id="net100CredentialReferenceField">
+            <label class="form-label">Credential Reference</label>
+            <input asp-for="Input.Net100CredentialReference" class="form-control" placeholder="jsw-main" />
+            <div class="form-text">Username and password are read from external appsettings, not stored in the config database.</div>
+        </div>
     </div>
     <div class="col-md-3"><label class="form-label">Manufacturer</label><input asp-for="Input.Manufacturer" class="form-control" /></div>
     <div class="col-md-3"><label class="form-label">Model</label><input asp-for="Input.Model" class="form-control" /></div>
@@ -55,9 +67,15 @@
         (() => {
             const protocol = document.getElementById('Input_Protocol');
             const fields = document.getElementById('net100ProfileFields');
+            const authenticationMode = document.getElementById('net100AuthenticationMode');
+            const credentialReferenceField = document.getElementById('net100CredentialReferenceField');
             const net100Value = '@((int)GatewayProtocol.Net100Http)';
-            const update = () => fields?.classList.toggle('d-none', protocol?.value !== net100Value);
+            const update = () => {
+                fields?.classList.toggle('d-none', protocol?.value !== net100Value);
+                credentialReferenceField?.classList.toggle('d-none', authenticationMode?.value !== 'BASIC');
+            };
             protocol?.addEventListener('change', update);
+            authenticationMode?.addEventListener('change', update);
             update();
         })();
     </script>

@@ -73,6 +73,10 @@ public static class ExternalAppSettings
                 MaxReconnectBackoffMs = 30000,
                 ShutdownTimeoutSeconds = 30
             },
+            Net100 = new
+            {
+                Credentials = new Dictionary<string, object>()
+            },
             MesSync = new
             {
                 Enabled = false,
