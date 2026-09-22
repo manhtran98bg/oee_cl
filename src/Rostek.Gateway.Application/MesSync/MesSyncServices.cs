@@ -1366,8 +1366,7 @@ public sealed class MesSyncOutboxDispatcher(
 
         var payload = new JsonObject
         {
-            ["schema_version"] = messageList.Any(message =>
-                message.Topic.Equals(SyncOutboxTopics.RealtimeSnapshot, StringComparison.OrdinalIgnoreCase)) ? 2 : 1,
+            ["schema_version"] = 1,
             ["gateway_id"] = gatewayId,
             ["created_at"] = createdAt,
             ["items"] = items
