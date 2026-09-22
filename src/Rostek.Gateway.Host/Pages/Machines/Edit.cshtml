@@ -54,17 +54,27 @@
             <option value="auto">Auto</option>
         </select>
     </div>
-    <div class="col-12"><h2 class="h5">OPC UA Connection</h2></div>
-    <div class="col-md-5"><label class="form-label">Endpoint URL</label><input asp-for="Input.OpcUa.EndpointUrl" class="form-control" /></div>
-    <div class="col-md-2"><label class="form-label">Security Mode</label><input asp-for="Input.OpcUa.SecurityMode" class="form-control" /></div>
-    <div class="col-md-2"><label class="form-label">Auth Mode</label><input asp-for="Input.OpcUa.AuthenticationMode" class="form-control" /></div>
-    <div class="col-md-3"><label class="form-label">Credential Ref</label><input asp-for="Input.OpcUa.CredentialReference" class="form-control" /></div>
-    <div class="col-12"><h2 class="h5">Modbus TCP Connection</h2></div>
-    <div class="col-md-3"><label class="form-label">Host</label><input asp-for="Input.ModbusTcp.Host" class="form-control" /></div>
-    <div class="col-md-2"><label class="form-label">Port</label><input asp-for="Input.ModbusTcp.Port" class="form-control" /></div>
-    <div class="col-md-2"><label class="form-label">Unit ID</label><input asp-for="Input.ModbusTcp.UnitId" class="form-control" /></div>
-    <div class="col-md-2"><label class="form-label">Polling ms</label><input asp-for="Input.ModbusTcp.PollingIntervalMs" class="form-control" /></div>
-    <div class="col-md-3"><label class="form-label">Options JSON</label><input asp-for="Input.ModbusTcp.OptionsJson" class="form-control" /></div>
+    <div class="col-12 row g-3" id="opcUaConnectionFields">
+        <div class="col-12"><h2 class="h5">OPC UA Connection</h2></div>
+        <div class="col-md-5"><label class="form-label">Endpoint URL</label><input asp-for="Input.OpcUa.EndpointUrl" class="form-control" /></div>
+        <div class="col-md-2"><label class="form-label">Security Mode</label><input asp-for="Input.OpcUa.SecurityMode" class="form-control" /></div>
+        <div class="col-md-2"><label class="form-label">Auth Mode</label><input asp-for="Input.OpcUa.AuthenticationMode" class="form-control" /></div>
+        <div class="col-md-3"><label class="form-label">Credential Ref</label><input asp-for="Input.OpcUa.CredentialReference" class="form-control" /></div>
+    </div>
+    <div class="col-12 row g-3" id="modbusConnectionFields">
+        <div class="col-12"><h2 class="h5">Modbus TCP Connection</h2></div>
+        <div class="col-md-3"><label class="form-label">Host</label><input asp-for="Input.ModbusTcp.Host" class="form-control" /></div>
+        <div class="col-md-2"><label class="form-label">Port</label><input asp-for="Input.ModbusTcp.Port" class="form-control" /></div>
+        <div class="col-md-2"><label class="form-label">Unit ID</label><input asp-for="Input.ModbusTcp.UnitId" class="form-control" /></div>
+        <div class="col-md-2"><label class="form-label">Polling ms</label><input asp-for="Input.ModbusTcp.PollingIntervalMs" class="form-control" /></div>
+        <div class="col-md-3"><label class="form-label">Options JSON</label><input asp-for="Input.ModbusTcp.OptionsJson" class="form-control" /></div>
+    </div>
+    <div class="col-12 row g-3" id="net100ConnectionFields">
+        <div class="col-12"><h2 class="h5">NET100 Machine</h2></div>
+        <div class="col-md-4"><label class="form-label">Machine Address</label><input asp-for="Input.Net100.MachineAddress" class="form-control" placeholder="172.20.20.11" /></div>
+        <div class="col-md-3"><label class="form-label">Request Timeout ms</label><input asp-for="Input.Net100.RequestTimeoutMs" class="form-control" /></div>
+        <div class="col-md-3"><label class="form-label">Retry Count</label><input asp-for="Input.Net100.RetryCount" class="form-control" /></div>
+    </div>
     @if (!string.IsNullOrWhiteSpace(Model.ErrorMessage))
     {
         <div class="col-12 text-danger">@Model.ErrorMessage</div>
@@ -94,6 +104,12 @@
             const count = document.getElementById('mesMachineCount');
             const search = document.getElementById('mesMachineSearch');
             const isEditMode = Boolean(document.getElementById('Input_Id')?.value);
+            const templateProtocols = @Html.Raw(Model.TemplateProtocolsJson);
+            const templateSelect = document.getElementById('Input_TemplateId');
+            const oeeTimeSource = document.getElementById('Input_OeeTimeSource');
+            const opcUaFields = document.getElementById('opcUaConnectionFields');
+            const modbusFields = document.getElementById('modbusConnectionFields');
+            const net100Fields = document.getElementById('net100ConnectionFields');
             let machines = [];
 
             if (fetchButton && isEditMode) {
@@ -128,6 +144,18 @@
             });
 
             search?.addEventListener('input', renderMachines);
+            templateSelect?.addEventListener('change', updateConnectionFields);
+            updateConnectionFields();
+
+            function updateConnectionFields() {
+                const protocol = templateProtocols[templateSelect?.value] ?? '';
+                opcUaFields?.classList.toggle('d-none', protocol !== 'OpcUa');
+                modbusFields?.classList.toggle('d-none', protocol !== 'ModbusTcp');
+                net100Fields?.classList.toggle('d-none', protocol !== 'Net100Http');
+                if (protocol === 'Net100Http' && oeeTimeSource) {
+                    oeeTimeSource.value = 'gateway_state';
+                }
+            }
 
             function renderMachines() {
                 const term = (search.value ?? '').trim().toLowerCase();

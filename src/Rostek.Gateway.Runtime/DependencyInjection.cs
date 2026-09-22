@@ -3,6 +3,7 @@ using Rostek.Gateway.Contracts.Runtime;
 using Rostek.Gateway.Runtime.Configuration;
 using Rostek.Gateway.Runtime.Machines;
 using Rostek.Gateway.Runtime.Modbus;
+using Rostek.Gateway.Runtime.Net100;
 using Rostek.Gateway.Runtime.OpcUa;
 
 namespace Rostek.Gateway.Runtime;
@@ -22,6 +23,11 @@ public static class DependencyInjection
         services.AddSingleton<ModbusSignalAddressParser>();
         services.AddSingleton<ModbusValueDecoder>();
         services.AddSingleton<OpcUaValueConverter>();
+        services.AddSingleton<Net100LastShotInfoParser>();
+        services.AddSingleton<Net100LiveParser>();
+        services.AddSingleton<INet100ClientAdapterFactory, Net100ClientAdapterFactory>();
+        services.AddSingleton<Net100ProfileRuntimeFactory>();
+        services.AddSingleton<Net100RuntimeCoordinator>();
         services.AddSingleton<MachineValueStore>();
         services.AddSingleton<IMachineValueReader>(sp => sp.GetRequiredService<MachineValueStore>());
         services.AddSingleton<ConfigurationDiffService>();

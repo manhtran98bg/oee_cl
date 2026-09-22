@@ -27,7 +27,7 @@ public sealed class MachineService(
             machine.Group?.Code,
             machine.Template?.Code ?? string.Empty,
             machine.Template?.Protocol ?? machine.Connection?.Protocol ?? GatewayProtocol.OpcUa,
-            FormatEndpoint(machine.Connection),
+            FormatEndpoint(machine),
             machine.Enabled)).ToList();
 
         return new MachineListResult(items, Math.Max(1, query.Page), Math.Max(1, query.PageSize));
@@ -86,6 +86,12 @@ public sealed class MachineService(
             input.ModbusTcp.PollingIntervalMs = machine.Connection.PollingIntervalMs;
             input.ModbusTcp.OptionsJson = machine.Connection.OptionsJson;
         }
+        else if (machine.Connection?.Protocol == GatewayProtocol.Net100Http)
+        {
+            input.Net100.MachineAddress = machine.Connection.Host;
+            input.Net100.RequestTimeoutMs = machine.Connection.RequestTimeoutMs;
+            input.Net100.RetryCount = machine.Connection.RetryCount;
+        }
 
         return input;
     }
@@ -117,6 +123,25 @@ public sealed class MachineService(
         if (!OeeTimeSources.IsValid(input.OeeTimeSource))
         {
             return GatewayResult<Guid>.Fail("OEE time source must be device_counters, gateway_state, or auto.");
+        }
+
+        if (template.Protocol == GatewayProtocol.Net100Http)
+        {
+            var machineAddress = NullIfWhiteSpace(input.Net100.MachineAddress);
+            if (machineAddress is null)
+            {
+                return GatewayResult<Guid>.Fail("NET100 machine address is required.");
+            }
+
+            var profileMachines = await repository.ListMachinesAsync(
+                new MachineQuery(null, null, template.Id, null, null, 1, 200),
+                cancellationToken);
+            if (profileMachines.Any(machine =>
+                    machine.Id != input.Id &&
+                    machine.Connection?.Host?.Equals(machineAddress, StringComparison.OrdinalIgnoreCase) == true))
+            {
+                return GatewayResult<Guid>.Fail($"NET100 machine address '{machineAddress}' already exists in this profile.");
+            }
         }
 
         var now = DateTimeOffset.UtcNow;
@@ -290,7 +315,7 @@ public sealed class MachineService(
                 OeeTimeSources.OptionName,
                 input.OeeTimeSource);
         }
-        else
+        else if (protocol == GatewayProtocol.ModbusTcp)
         {
             connection.Host = NullIfWhiteSpace(input.ModbusTcp.Host);
             connection.Port = input.ModbusTcp.Port ?? 502;
@@ -309,12 +334,37 @@ public sealed class MachineService(
             connection.AuthenticationMode = null;
             connection.CredentialReference = null;
         }
+        else if (protocol == GatewayProtocol.Net100Http)
+        {
+            connection.Host = NullIfWhiteSpace(input.Net100.MachineAddress);
+            connection.Port = null;
+            connection.UnitId = null;
+            connection.EndpointUrl = null;
+            connection.SecurityMode = null;
+            connection.SecurityPolicy = null;
+            connection.AuthenticationMode = null;
+            connection.CredentialReference = null;
+            connection.ConnectTimeoutMs = input.Net100.RequestTimeoutMs;
+            connection.RequestTimeoutMs = input.Net100.RequestTimeoutMs;
+            connection.RetryCount = input.Net100.RetryCount;
+            connection.PollingIntervalMs = null;
+            connection.OptionsJson = ConfigurationJson.SetStringOption(
+                null,
+                OeeTimeSources.OptionName,
+                OeeTimeSources.GatewayState);
+        }
+        else
+        {
+            throw new NotSupportedException($"Protocol '{protocol}' is not supported.");
+        }
     }
 
-    private static string FormatEndpoint(MachineConnection? connection) =>
-        connection?.Protocol == GatewayProtocol.OpcUa
-            ? connection.EndpointUrl ?? string.Empty
-            : $"{connection?.Host}:{connection?.Port}";
+    private static string FormatEndpoint(Machine machine) => machine.Connection?.Protocol switch
+    {
+        GatewayProtocol.OpcUa => machine.Connection.EndpointUrl ?? string.Empty,
+        GatewayProtocol.Net100Http => machine.Connection.Host ?? string.Empty,
+        _ => $"{machine.Connection?.Host}:{machine.Connection?.Port}"
+    };
 
     private static string NormalizeCode(string code) => code.Trim().ToUpperInvariant();
     private static string? NullIfWhiteSpace(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();

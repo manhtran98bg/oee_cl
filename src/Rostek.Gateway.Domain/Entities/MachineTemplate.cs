@@ -11,6 +11,9 @@ public sealed class MachineTemplate
     public string? Manufacturer { get; set; }
     public string? Model { get; set; }
     public int DefaultPollingIntervalMs { get; set; } = 1000;
+    public string? Net100ServerHost { get; set; }
+    public int Net100ServerPort { get; set; } = 80;
+    public string Net100BasePath { get; set; } = "/net100";
     public string? Description { get; set; }
     public bool Enabled { get; set; } = true;
     public DateTimeOffset CreatedAtUtc { get; set; } = DateTimeOffset.UtcNow;

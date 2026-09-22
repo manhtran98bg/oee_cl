@@ -5,6 +5,7 @@ using Rostek.Gateway.Application.Ports;
 using Rostek.Gateway.Contracts.Configuration;
 using Rostek.Gateway.Contracts.ImportExport;
 using Rostek.Gateway.Domain.Entities;
+using Rostek.Gateway.Domain.Enums;
 
 namespace Rostek.Gateway.Application.Configurations;
 
@@ -119,9 +120,14 @@ public sealed class ConfigurationImportExportService(
                 Enabled = row.Enabled
             };
 
-            if (template.Protocol.ToString().Equals("OpcUa", StringComparison.OrdinalIgnoreCase))
+            if (template.Protocol == GatewayProtocol.OpcUa)
             {
                 input.OpcUa.EndpointUrl = row.EndpointUrl;
+            }
+            else if (template.Protocol == GatewayProtocol.Net100Http)
+            {
+                input.Net100.MachineAddress = row.Host;
+                input.OeeTimeSource = OeeTimeSources.GatewayState;
             }
             else
             {

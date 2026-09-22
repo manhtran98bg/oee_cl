@@ -10,6 +10,11 @@
     <div class="col-md-5"><label class="form-label">Name</label><input asp-for="Input.Name" class="form-control" /></div>
     <div class="col-md-2"><label class="form-label">Protocol</label><select asp-for="Input.Protocol" asp-items="Html.GetEnumSelectList<GatewayProtocol>()" class="form-select"></select></div>
     <div class="col-md-2"><label class="form-label">Polling ms</label><input asp-for="Input.DefaultPollingIntervalMs" class="form-control" /></div>
+    <div class="col-12 row g-3" id="net100ProfileFields">
+        <div class="col-md-5"><label class="form-label">NET100 Server IP / Host</label><input asp-for="Input.Net100ServerHost" class="form-control" placeholder="172.20.20.5" /></div>
+        <div class="col-md-2"><label class="form-label">NET100 Port</label><input asp-for="Input.Net100ServerPort" class="form-control" /></div>
+        <div class="col-md-3"><label class="form-label">NET100 Base Path</label><input asp-for="Input.Net100BasePath" class="form-control" placeholder="/net100" /></div>
+    </div>
     <div class="col-md-3"><label class="form-label">Manufacturer</label><input asp-for="Input.Manufacturer" class="form-control" /></div>
     <div class="col-md-3"><label class="form-label">Model</label><input asp-for="Input.Model" class="form-control" /></div>
     <div class="col-md-2 form-check mt-5"><input asp-for="Input.Enabled" class="form-check-input" /><label class="form-check-label">Enabled</label></div>
@@ -23,3 +28,37 @@
         <a class="btn btn-secondary" asp-page="Index">Cancel</a>
     </div>
 </form>
+@if (Model.Input.Id is not null && Model.Input.Protocol == GatewayProtocol.Net100Http)
+{
+    <h2 class="h5 mt-4">Assigned NET100 Machines</h2>
+    <div class="table-responsive">
+        <table class="table table-sm table-striped align-middle">
+            <thead><tr><th>Code</th><th>Name</th><th>Machine Address</th><th>Enabled</th><th></th></tr></thead>
+            <tbody>
+            @foreach (var machine in Model.AssignedMachines)
+            {
+                <tr>
+                    <td>@machine.Code</td>
+                    <td>@machine.Name</td>
+                    <td>@machine.Endpoint</td>
+                    <td>@machine.Enabled</td>
+                    <td class="text-end"><a asp-page="/Machines/Edit" asp-route-id="@machine.Id">Edit</a></td>
+                </tr>
+            }
+            </tbody>
+        </table>
+    </div>
+}
+
+@section Scripts {
+    <script>
+        (() => {
+            const protocol = document.getElementById('Input_Protocol');
+            const fields = document.getElementById('net100ProfileFields');
+            const net100Value = '@((int)GatewayProtocol.Net100Http)';
+            const update = () => fields?.classList.toggle('d-none', protocol?.value !== net100Value);
+            protocol?.addEventListener('change', update);
+            update();
+        })();
+    </script>
+}

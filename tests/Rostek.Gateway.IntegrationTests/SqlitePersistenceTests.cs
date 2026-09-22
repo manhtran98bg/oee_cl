@@ -1,8 +1,11 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+using Rostek.Gateway.Application.MachineTemplates;
 using Rostek.Gateway.Application.Machines;
 using Rostek.Gateway.Application.Oee;
+using Rostek.Gateway.Contracts.Runtime;
 using Rostek.Gateway.Domain.Entities;
 using Rostek.Gateway.Domain.Enums;
 using Rostek.Gateway.Infrastructure.Oee;
@@ -77,6 +80,9 @@ public sealed class SqlitePersistenceTests
         Assert.Contains("Serial", await ReadColumnNamesAsync(connection, "Machines"));
         Assert.Contains("Manufacturer", await ReadColumnNamesAsync(connection, "Machines"));
         Assert.Contains("Location", await ReadColumnNamesAsync(connection, "Machines"));
+        Assert.Contains("Net100ServerHost", await ReadColumnNamesAsync(connection, "MachineTemplates"));
+        Assert.Contains("Net100ServerPort", await ReadColumnNamesAsync(connection, "MachineTemplates"));
+        Assert.Contains("Net100BasePath", await ReadColumnNamesAsync(connection, "MachineTemplates"));
     }
 
     [Fact]
@@ -103,6 +109,20 @@ public sealed class SqlitePersistenceTests
                 Name TEXT not null,
                 Description TEXT null,
                 DisplayOrder INTEGER not null,
+                CreatedAtUtc TEXT not null,
+                UpdatedAtUtc TEXT not null
+            );
+
+            create table MachineTemplates (
+                Id TEXT not null primary key,
+                Code TEXT not null,
+                Name TEXT not null,
+                Protocol TEXT not null,
+                Manufacturer TEXT null,
+                Model TEXT null,
+                DefaultPollingIntervalMs INTEGER not null,
+                Description TEXT null,
+                Enabled INTEGER not null,
                 CreatedAtUtc TEXT not null,
                 UpdatedAtUtc TEXT not null
             );
@@ -199,6 +219,42 @@ public sealed class SqlitePersistenceTests
         db.MachineTemplates.Add(template);
 
         await Assert.ThrowsAnyAsync<DbUpdateException>(() => db.SaveChangesAsync());
+    }
+
+    [Fact]
+    public async Task Net100_template_saves_server_profile_and_default_signals()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        await using var db = CreateContext(connection);
+        await db.Database.EnsureCreatedAsync();
+        var repository = new EfCoreConfigRepository(db);
+        var service = new MachineTemplateService(
+            repository,
+            Options.Create(new RuntimeOptions()),
+            NullLogger<MachineTemplateService>.Instance);
+
+        var save = await service.SaveAsync(
+            new MachineTemplateInput
+            {
+                Code = "JSW-NET100",
+                Name = "JSW NET100",
+                Protocol = GatewayProtocol.Net100Http,
+                Net100ServerHost = "172.20.20.5",
+                Net100ServerPort = 80,
+                Net100BasePath = "/net100"
+            },
+            null,
+            CancellationToken.None);
+
+        var template = await repository.GetTemplateAsync(save.Value, includeSignals: true, CancellationToken.None);
+        Assert.True(save.Succeeded);
+        Assert.NotNull(template);
+        Assert.Equal("172.20.20.5", template!.Net100ServerHost);
+        Assert.Equal(80, template.Net100ServerPort);
+        Assert.Equal(5, template.Signals.Count);
+        Assert.Contains(template.Signals, signal => signal.SignalCode == "SHOT_OK_COUNT" && signal.SourceAddress == "live.shot_no");
+        Assert.DoesNotContain(template.Signals, signal => signal.SignalCode == "SHOT_NG_COUNT");
     }
 
     [Fact]

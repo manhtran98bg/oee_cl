@@ -1,9 +1,11 @@
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Rostek.Gateway.Application.Common;
+using Rostek.Gateway.Contracts.Configuration;
 using Rostek.Gateway.Contracts.Runtime;
 using Rostek.Gateway.Application.Ports;
 using Rostek.Gateway.Domain.Entities;
+using Rostek.Gateway.Domain.Enums;
 
 namespace Rostek.Gateway.Application.MachineTemplates;
 
@@ -35,6 +37,9 @@ public sealed class MachineTemplateService(
                 Manufacturer = template.Manufacturer,
                 Model = template.Model,
                 DefaultPollingIntervalMs = template.DefaultPollingIntervalMs,
+                Net100ServerHost = template.Net100ServerHost,
+                Net100ServerPort = template.Net100ServerPort,
+                Net100BasePath = template.Net100BasePath,
                 Description = template.Description,
                 Enabled = template.Enabled
             };
@@ -96,6 +101,19 @@ public sealed class MachineTemplateService(
             return GatewayResult<Guid>.Fail($"Default polling interval must be at least {runtimeOptions.Value.MinimumPollingIntervalMs} ms.");
         }
 
+        if (input.Protocol == GatewayProtocol.Net100Http)
+        {
+            if (string.IsNullOrWhiteSpace(input.Net100ServerHost))
+            {
+                return GatewayResult<Guid>.Fail("NET100 server IP or host is required.");
+            }
+
+            if (input.Net100ServerPort is < 1 or > 65535)
+            {
+                return GatewayResult<Guid>.Fail("NET100 server port must be between 1 and 65535.");
+            }
+        }
+
         if (await repository.TemplateCodeExistsAsync(code, input.Id, cancellationToken))
         {
             return GatewayResult<Guid>.Fail($"Template code '{code}' already exists.");
@@ -103,6 +121,7 @@ public sealed class MachineTemplateService(
 
         var now = DateTimeOffset.UtcNow;
         MachineTemplate template;
+        var isNew = input.Id is null;
         if (input.Id is Guid id)
         {
             template = await repository.GetTemplateAsync(id, includeSignals: false, cancellationToken) ?? throw new InvalidOperationException("Template not found.");
@@ -120,8 +139,22 @@ public sealed class MachineTemplateService(
         template.Manufacturer = NullIfWhiteSpace(input.Manufacturer);
         template.Model = NullIfWhiteSpace(input.Model);
         template.DefaultPollingIntervalMs = input.DefaultPollingIntervalMs;
+        template.Net100ServerHost = input.Protocol == GatewayProtocol.Net100Http
+            ? NullIfWhiteSpace(input.Net100ServerHost)
+            : null;
+        template.Net100ServerPort = input.Protocol == GatewayProtocol.Net100Http
+            ? input.Net100ServerPort
+            : 80;
+        template.Net100BasePath = input.Protocol == GatewayProtocol.Net100Http
+            ? Net100Configuration.NormalizeBasePath(input.Net100BasePath)
+            : Net100Configuration.DefaultBasePath;
         template.Description = NullIfWhiteSpace(input.Description);
         template.Enabled = input.Enabled;
+
+        if (isNew && input.Protocol == GatewayProtocol.Net100Http)
+        {
+            AddDefaultNet100Signals(template, now);
+        }
 
         await AddAuditAsync(input.Id is null ? "Create machine template" : "Update machine template", nameof(MachineTemplate), template.Id, userName, cancellationToken);
         await repository.SaveChangesAsync(cancellationToken);
@@ -157,6 +190,9 @@ public sealed class MachineTemplateService(
             Manufacturer = source.Manufacturer,
             Model = source.Model,
             DefaultPollingIntervalMs = source.DefaultPollingIntervalMs,
+            Net100ServerHost = source.Net100ServerHost,
+            Net100ServerPort = source.Net100ServerPort,
+            Net100BasePath = source.Net100BasePath,
             Description = source.Description,
             Enabled = source.Enabled,
             CreatedAtUtc = now,
@@ -279,6 +315,42 @@ public sealed class MachineTemplateService(
             EntityId = entityId.ToString(),
             CreatedAtUtc = DateTimeOffset.UtcNow
         }, cancellationToken);
+
+    private static void AddDefaultNet100Signals(MachineTemplate template, DateTimeOffset now)
+    {
+        template.Signals =
+        [
+            CreateSignal(template, "MACHINE_STATE", "Machine State", Net100Configuration.MachineStateSource, SignalDataType.String, true, 0, now),
+            CreateSignal(template, "SHOT_OK_COUNT", "Shot OK Count", Net100Configuration.ShotNumberSource, SignalDataType.Int64, true, 1, now),
+            CreateSignal(template, "CYCLE_TIME_MS", "Cycle Time", Net100Configuration.CycleTimeMsSource, SignalDataType.Int32, false, 2, now),
+            CreateSignal(template, "NET100_ALARM", "NET100 Alarm", Net100Configuration.AlarmSource, SignalDataType.Boolean, false, 3, now),
+            CreateSignal(template, "NET100_QUALITY_CODE", "NET100 Quality Code", Net100Configuration.QualityCodeSource, SignalDataType.Int32, false, 4, now)
+        ];
+    }
+
+    private static TemplateSignal CreateSignal(
+        MachineTemplate template,
+        string code,
+        string name,
+        string sourceAddress,
+        SignalDataType dataType,
+        bool required,
+        int displayOrder,
+        DateTimeOffset now) =>
+        new()
+        {
+            Template = template,
+            TemplateId = template.Id,
+            SignalCode = code,
+            DisplayName = name,
+            SourceAddress = sourceAddress,
+            DataType = dataType,
+            Required = required,
+            Enabled = true,
+            DisplayOrder = displayOrder,
+            CreatedAtUtc = now,
+            UpdatedAtUtc = now
+        };
 
     private static string NormalizeCode(string code) => code.Trim().ToUpperInvariant();
     private static string? NullIfWhiteSpace(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();

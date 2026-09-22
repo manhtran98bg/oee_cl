@@ -15,6 +15,7 @@ public sealed class EditModel(IMachineService machineService, IMachineGroupServi
 
     public List<SelectListItem> GroupOptions { get; private set; } = [];
     public List<SelectListItem> TemplateOptions { get; private set; } = [];
+    public string TemplateProtocolsJson { get; private set; } = "{}";
     public string? ErrorMessage { get; private set; }
     public string? EffectiveJson { get; private set; }
 
@@ -56,8 +57,11 @@ public sealed class EditModel(IMachineService machineService, IMachineGroupServi
         GroupOptions = (await groupService.ListAsync(cancellationToken))
             .Select(group => new SelectListItem(group.Code, group.Id.ToString()))
             .ToList();
-        TemplateOptions = (await templateService.ListAsync(cancellationToken))
+        var templates = await templateService.ListAsync(cancellationToken);
+        TemplateOptions = templates
             .Select(template => new SelectListItem($"{template.Code} ({template.Protocol})", template.Id.ToString()))
             .ToList();
+        TemplateProtocolsJson = JsonSerializer.Serialize(
+            templates.ToDictionary(template => template.Id.ToString(), template => template.Protocol.ToString()));
     }
 }

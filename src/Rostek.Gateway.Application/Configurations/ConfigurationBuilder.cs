@@ -44,6 +44,10 @@ public sealed class ConfigurationBuilder(IConfigRepository repository) : IConfig
             .Select(signal => BuildSignal(signal, overrides.GetValueOrDefault(signal.Id)))
             .ToList();
 
+        var endpointUrl = template.Protocol == GatewayProtocol.Net100Http
+            ? BuildNet100Endpoint(template)
+            : connection.EndpointUrl;
+
         return new EffectiveMachineConfiguration(
             machine.Id,
             machine.Code,
@@ -53,8 +57,8 @@ public sealed class ConfigurationBuilder(IConfigRepository repository) : IConfig
             new EffectiveConnectionConfiguration(
                 ProtocolText(template.Protocol),
                 connection.Host,
-                connection.Port,
-                connection.EndpointUrl,
+                template.Protocol == GatewayProtocol.Net100Http ? template.Net100ServerPort : connection.Port,
+                endpointUrl,
                 connection.UnitId,
                 connection.SecurityMode,
                 connection.SecurityPolicy,
@@ -65,7 +69,10 @@ public sealed class ConfigurationBuilder(IConfigRepository repository) : IConfig
                 connection.RetryCount,
                 connection.PollingIntervalMs ?? template.DefaultPollingIntervalMs,
                 ConfigurationJson.ParseObjectOptions(connection.OptionsJson)),
-            signals);
+            signals)
+        {
+            TemplateId = template.Id
+        };
     }
 
     private static EffectiveSignalConfiguration BuildSignal(TemplateSignal signal, MachineSignalOverride? signalOverride) =>
@@ -81,6 +88,18 @@ public sealed class ConfigurationBuilder(IConfigRepository repository) : IConfig
             ConfigurationJson.ParseStringMap(signalOverride?.ValueMappingJson ?? signal.ValueMappingJson),
             ConfigurationJson.ParseObjectOptions(signalOverride?.OptionsJson ?? signal.OptionsJson));
 
-    private static string ProtocolText(GatewayProtocol protocol) =>
-        protocol == GatewayProtocol.ModbusTcp ? "MODBUS_TCP" : "OPCUA";
+    private static string? BuildNet100Endpoint(MachineTemplate template) =>
+        string.IsNullOrWhiteSpace(template.Net100ServerHost)
+            ? null
+            : Net100Configuration.BuildBaseUrl(
+                template.Net100ServerHost,
+                template.Net100ServerPort,
+                template.Net100BasePath);
+
+    private static string ProtocolText(GatewayProtocol protocol) => protocol switch
+    {
+        GatewayProtocol.ModbusTcp => "MODBUS_TCP",
+        GatewayProtocol.Net100Http => Net100Configuration.Protocol,
+        _ => "OPCUA"
+    };
 }

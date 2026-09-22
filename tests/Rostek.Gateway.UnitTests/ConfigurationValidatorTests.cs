@@ -80,6 +80,49 @@ public sealed class ConfigurationValidatorTests
         Assert.Contains(result.Issues, issue => issue.Code == "OEE_TIME_SOURCE_INVALID");
     }
 
+    [Fact]
+    public async Task Net100_configuration_accepts_server_machine_and_supported_signals()
+    {
+        var templateId = Guid.NewGuid();
+        var machine = new EffectiveMachineConfiguration(
+            Guid.NewGuid(),
+            "JSW-01",
+            "JSW 01",
+            Net100Configuration.Protocol,
+            true,
+            new EffectiveConnectionConfiguration(
+                Net100Configuration.Protocol,
+                "172.20.20.11",
+                80,
+                "http://172.20.20.5:80/net100",
+                null,
+                null,
+                null,
+                null,
+                null,
+                3000,
+                3000,
+                3,
+                1000,
+                new Dictionary<string, object> { [OeeTimeSources.OptionName] = OeeTimeSources.GatewayState }),
+            [
+                new EffectiveSignalConfiguration("MACHINE_STATE", Net100Configuration.MachineStateSource, "STRING", null, 1, 0, true, true, null, null),
+                new EffectiveSignalConfiguration("SHOT_OK_COUNT", Net100Configuration.ShotNumberSource, "INT64", null, 1, 0, true, true, null, null)
+            ])
+        {
+            TemplateId = templateId
+        };
+        var configuration = new RuntimeConfiguration(
+            1,
+            DateTimeOffset.UtcNow,
+            new Dictionary<string, EffectiveMachineConfiguration> { [machine.MachineCode] = machine });
+
+        var result = await new ConfigurationValidator(Options.Create(new RuntimeOptions()))
+            .ValidateAsync(configuration, CancellationToken.None);
+
+        Assert.True(result.IsValid);
+    }
+
     private static RuntimeConfiguration CreateConfiguration(
         string endpointUrl = "opc.tcp://127.0.0.1:4840",
         bool signalEnabled = true,

@@ -39,6 +39,7 @@ public sealed class MachineEditInput
     public string? Description { get; set; }
     public OpcUaConnectionInput OpcUa { get; set; } = new();
     public ModbusTcpConnectionInput ModbusTcp { get; set; } = new();
+    public Net100ConnectionInput Net100 { get; set; } = new();
 }
 
 public sealed class OpcUaConnectionInput
@@ -62,6 +63,13 @@ public sealed class ModbusTcpConnectionInput
     public int RetryCount { get; set; } = 3;
     public int? PollingIntervalMs { get; set; }
     public string? OptionsJson { get; set; }
+}
+
+public sealed class Net100ConnectionInput
+{
+    public string? MachineAddress { get; set; }
+    public int RequestTimeoutMs { get; set; } = 3000;
+    public int RetryCount { get; set; } = 3;
 }
 
 public sealed record MachineListItem(

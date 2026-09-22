@@ -4,6 +4,7 @@ using Rostek.Gateway.Contracts.Configuration;
 using Rostek.Gateway.Contracts.Machines;
 using Rostek.Gateway.Contracts.Runtime;
 using Rostek.Gateway.Runtime.Configuration;
+using Rostek.Gateway.Runtime.Net100;
 
 namespace Rostek.Gateway.Runtime.Machines;
 
@@ -12,6 +13,7 @@ public sealed class MachineRuntimeManager(
     ConfigurationDiffService diffService,
     IOptions<RuntimeOptions> options,
     MachineValueStore valueStore,
+    Net100RuntimeCoordinator net100Coordinator,
     ILogger<MachineRuntimeManager> logger) : IMachineRuntimeManager, IRuntimeStatusReader
 {
     private readonly Dictionary<string, IMachineRuntime> _runtimes = new(StringComparer.OrdinalIgnoreCase);
@@ -21,11 +23,28 @@ public sealed class MachineRuntimeManager(
 
     public async Task ApplyConfigurationAsync(RuntimeConfiguration previous, RuntimeConfiguration current, CancellationToken cancellationToken)
     {
+        await net100Coordinator.ApplyConfigurationAsync(current, cancellationToken);
+
         foreach (var change in diffService.Diff(previous, current).Where(change => change.ChangeType != MachineConfigurationChangeType.Unchanged))
         {
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
+                if (Net100Configuration.IsProtocol(change.Current?.Protocol))
+                {
+                    if (change.Previous is not null && !Net100Configuration.IsProtocol(change.Previous.Protocol))
+                    {
+                        await StopAndRemoveAsync(change.MachineCode, cancellationToken);
+                    }
+
+                    continue;
+                }
+
+                if (change.Current is null && Net100Configuration.IsProtocol(change.Previous?.Protocol))
+                {
+                    continue;
+                }
+
                 await ApplyChangeAsync(change, cancellationToken);
             }
             catch (Exception ex)
@@ -36,10 +55,13 @@ public sealed class MachineRuntimeManager(
     }
 
     public IReadOnlyCollection<MachineRuntimeStatusDto> GetStatuses() =>
-        _runtimes.Values.Select(runtime => runtime.Status).OrderBy(status => status.MachineCode).ToList();
+        _runtimes.Values.Select(runtime => runtime.Status)
+            .Concat(net100Coordinator.GetStatuses())
+            .OrderBy(status => status.MachineCode)
+            .ToList();
 
     public MachineRuntimeStatusDto? GetStatus(string machineCode) =>
-        _runtimes.TryGetValue(machineCode, out var runtime) ? runtime.Status : null;
+        _runtimes.TryGetValue(machineCode, out var runtime) ? runtime.Status : net100Coordinator.GetStatus(machineCode);
 
     private async Task ApplyChangeAsync(MachineConfigurationChange change, CancellationToken cancellationToken)
     {

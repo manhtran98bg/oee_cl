@@ -7,4 +7,7 @@ public sealed record EffectiveMachineConfiguration(
     string Protocol,
     bool Enabled,
     EffectiveConnectionConfiguration Connection,
-    IReadOnlyList<EffectiveSignalConfiguration> Signals);
+    IReadOnlyList<EffectiveSignalConfiguration> Signals)
+{
+    public Guid TemplateId { get; init; }
+}

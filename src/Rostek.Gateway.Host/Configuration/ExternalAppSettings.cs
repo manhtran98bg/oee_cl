@@ -68,6 +68,7 @@ public static class ExternalAppSettings
             {
                 MaxInitialConcurrentConnections = 5,
                 MaxReconnectConcurrentConnections = 5,
+                MaxNet100ConcurrentRequests = 5,
                 MinimumPollingIntervalMs = 200,
                 MaxReconnectBackoffMs = 30000,
                 ShutdownTimeoutSeconds = 30

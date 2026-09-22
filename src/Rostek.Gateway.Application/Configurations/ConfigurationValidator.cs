@@ -36,6 +36,8 @@ public sealed class ConfigurationValidator(IOptions<RuntimeOptions> runtimeOptio
             }
         }
 
+        ValidateNet100MachineAddresses(configuration, issues);
+
         return Task.FromResult(new ConfigurationValidationResult(!issues.Any(issue => issue.Severity == "ERROR"), issues));
     }
 
@@ -86,6 +88,23 @@ public sealed class ConfigurationValidator(IOptions<RuntimeOptions> runtimeOptio
                 AddError(issues, "MODBUS_UNIT_INVALID", "Unit ID must be between 0 and 255.", machine.MachineCode, null, "UnitId");
             }
         }
+        else if (Net100Configuration.IsProtocol(machine.Protocol))
+        {
+            if (string.IsNullOrWhiteSpace(machine.Connection.Host))
+            {
+                AddError(issues, "NET100_MACHINE_ADDRESS_REQUIRED", "NET100 machine address is required.", machine.MachineCode, null, "Host");
+            }
+
+            if (!Uri.TryCreate(machine.Connection.EndpointUrl, UriKind.Absolute, out var endpoint) || endpoint.Scheme != Uri.UriSchemeHttp)
+            {
+                AddError(issues, "NET100_ENDPOINT_INVALID", "NET100 server endpoint must be an absolute HTTP URL.", machine.MachineCode, null, "EndpointUrl");
+            }
+
+            if (machine.Connection.Port is < 1 or > 65535)
+            {
+                AddError(issues, "NET100_PORT_INVALID", "NET100 server port must be between 1 and 65535.", machine.MachineCode, null, "Port");
+            }
+        }
     }
 
     private static void ValidateSignal(EffectiveMachineConfiguration machine, EffectiveSignalConfiguration signal, List<ConfigurationValidationIssue> issues)
@@ -113,6 +132,78 @@ public sealed class ConfigurationValidator(IOptions<RuntimeOptions> runtimeOptio
         if (signal.Enabled && IsOpcUa(machine.Protocol) && !string.IsNullOrWhiteSpace(signal.SourceAddress))
         {
             ValidateOpcUaSignal(machine.MachineCode, signal, issues);
+        }
+
+        if (signal.Enabled && Net100Configuration.IsProtocol(machine.Protocol) && !string.IsNullOrWhiteSpace(signal.SourceAddress))
+        {
+            ValidateNet100Signal(machine.MachineCode, signal, issues);
+        }
+    }
+
+    private static void ValidateNet100Signal(string machineCode, EffectiveSignalConfiguration signal, List<ConfigurationValidationIssue> issues)
+    {
+        var source = signal.SourceAddress.Trim().ToLowerInvariant();
+        var expectedType = source switch
+        {
+            Net100Configuration.MachineStateSource => "STRING",
+            Net100Configuration.StatusSource => "STRING",
+            Net100Configuration.AlarmSource => "BOOLEAN",
+            Net100Configuration.ShotNumberSource => "INT64",
+            Net100Configuration.CycleTimeMsSource => "INT32",
+            Net100Configuration.QualityCodeSource => "INT32",
+            _ => null
+        };
+
+        if (expectedType is null)
+        {
+            AddError(
+                issues,
+                "NET100_SIGNAL_SOURCE_INVALID",
+                "NET100 source address must be live.machine_state, live.status, live.alarm, live.shot_no, lastshotinfo.cycle_time_ms, or lastshotinfo.quality_code.",
+                machineCode,
+                signal.SignalCode,
+                "SourceAddress");
+            return;
+        }
+
+        if (!signal.DataType.Equals(expectedType, StringComparison.OrdinalIgnoreCase))
+        {
+            AddError(
+                issues,
+                "NET100_SIGNAL_TYPE_INVALID",
+                $"NET100 source '{signal.SourceAddress}' requires data type {expectedType}.",
+                machineCode,
+                signal.SignalCode,
+                "DataType");
+        }
+    }
+
+    private static void ValidateNet100MachineAddresses(
+        RuntimeConfiguration configuration,
+        List<ConfigurationValidationIssue> issues)
+    {
+        var duplicateGroups = configuration.Machines.Values
+            .Where(machine => machine.Enabled &&
+                              Net100Configuration.IsProtocol(machine.Protocol) &&
+                              machine.TemplateId != Guid.Empty &&
+                              !string.IsNullOrWhiteSpace(machine.Connection.Host))
+            .GroupBy(
+                machine => $"{machine.TemplateId:N}|{machine.Connection.Host!.Trim()}",
+                StringComparer.OrdinalIgnoreCase)
+            .Where(group => group.Count() > 1);
+
+        foreach (var group in duplicateGroups)
+        {
+            foreach (var machine in group)
+            {
+                AddError(
+                    issues,
+                    "NET100_MACHINE_ADDRESS_DUPLICATE",
+                    $"NET100 machine address '{machine.Connection.Host}' is duplicated in this server profile.",
+                    machine.MachineCode,
+                    null,
+                    "Host");
+            }
         }
     }
 
