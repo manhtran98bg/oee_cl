@@ -27,8 +27,7 @@ public sealed class SyncOutboxTests
                 repository,
                 cache,
                 new OrderQuantityCache(),
-                new TestRuntimeConfigurationProvider(("M16-01", true)),
-                NullLogger<RealtimeSnapshotBuilder>.Instance),
+                new TestRuntimeConfigurationProvider(("M16-01", true))),
             new MachineStateEventBuilder(
                 repository,
                 cache,
@@ -69,8 +68,7 @@ public sealed class SyncOutboxTests
                 repository,
                 cache,
                 new OrderQuantityCache(),
-                new TestRuntimeConfigurationProvider(("M16-01", true)),
-                NullLogger<RealtimeSnapshotBuilder>.Instance),
+                new TestRuntimeConfigurationProvider(("M16-01", true))),
             new MachineStateEventBuilder(
                 repository,
                 cache,
@@ -206,8 +204,7 @@ public sealed class SyncOutboxTests
                 repository,
                 cache,
                 new OrderQuantityCache(),
-                new TestRuntimeConfigurationProvider(("M16-01", true)),
-                NullLogger<RealtimeSnapshotBuilder>.Instance),
+                new TestRuntimeConfigurationProvider(("M16-01", true))),
             new MachineStateEventBuilder(
                 repository,
                 cache,

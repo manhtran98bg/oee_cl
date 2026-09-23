@@ -248,7 +248,7 @@ public sealed class Net100ProfileRuntime : IAsyncDisposable
                 if (attempt < attempts)
                 {
                     _logger.LogWarning(
-                        exception,
+                        null,
                         "Retrying NET100 live request. Machine={MachineCode}, Address={MachineAddress}, Attempt={Attempt}, MaxAttempts={MaxAttempts}",
                         machine.MachineCode,
                         address,
@@ -259,7 +259,7 @@ public sealed class Net100ProfileRuntime : IAsyncDisposable
         }
 
         var message = lastError?.Message ?? "NET100 live request failed.";
-        _logger.LogWarning(lastError, "NET100 live request failed for machine {MachineCode} at {MachineAddress}", machine.MachineCode, address);
+        _logger.LogWarning(null, "NET100 live request failed for machine {MachineCode} at {MachineAddress}", machine.MachineCode, address);
         UpdateStatus(machine.MachineCode, MachineRuntimeState.Reconnecting, message);
         _valueStore.MarkOffline(machine.MachineCode, message);
     }

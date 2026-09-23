@@ -197,8 +197,7 @@ public sealed class RealtimeSnapshotBuilderTests
             capture,
             new StubOeeLocalProcessingService(snapshot),
             new FailingOutboxDispatcher(),
-            status,
-            NullLogger<RealtimeSnapshotSyncService>.Instance);
+            status);
 
         await service.SyncAsync("GW-M16-01", CancellationToken.None);
 
@@ -215,8 +214,7 @@ public sealed class RealtimeSnapshotBuilderTests
             repository,
             cache,
             orderQuantityCache ?? new OrderQuantityCache(),
-            runtimeProvider ?? new TestRuntimeConfigurationProvider(("M16-01", true)),
-            NullLogger<RealtimeSnapshotBuilder>.Instance);
+            runtimeProvider ?? new TestRuntimeConfigurationProvider(("M16-01", true)));
 
     private static ProductionContextCache LoadedCache(InMemoryOeeLocalRepository repository)
     {

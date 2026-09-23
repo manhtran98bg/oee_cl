@@ -394,8 +394,7 @@ public sealed class RealtimeSnapshotBuilder(
     IOeeLocalRepository repository,
     IProductionContextCache productionContextCache,
     IOrderQuantityCache orderQuantityCache,
-    IRuntimeConfigurationProvider runtimeConfigurationProvider,
-    ILogger<RealtimeSnapshotBuilder> logger) : IRealtimeSnapshotBuilder
+    IRuntimeConfigurationProvider runtimeConfigurationProvider) : IRealtimeSnapshotBuilder
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -457,48 +456,14 @@ public sealed class RealtimeSnapshotBuilder(
                     SeedBaseline(context, effectiveRaw, createdAt);
                     await repository.SaveProductionContextAsync(context, cancellationToken);
                     productionContextCache.Upsert(context);
-                    // logger.LogInformation(
-                    //     "Seeded realtime OEE baseline. Machine={Machine}, OrderId={OrderId}, SessionId={SessionId}, RawId={RawId}, CapturedAt={CapturedAt}",
-                    //     context.Machine,
-                    //     context.OrderId,
-                    //     context.SessionId,
-                    //     effectiveRaw.Id,
-                    //     effectiveRaw.ReadAt);
                     items.Add(CreateEmptyContextItem(context, state));
                     skipped++;
                     continue;
                 }
 
                 var metricAt = hasCurrentRaw ? createdAt : effectiveRaw.ReadAt;
-                var item = CreateContextItem(
-                    context,
-                    effectiveRaw,
-                    metricAt,
-                    state,
-                    out var runTime,
-                    out var stopTime,
-                    out var errorTime,
-                    out var productionTime);
+                var item = CreateContextItem(context, effectiveRaw, metricAt, state);
                 items.Add(item);
-
-                // logger.LogInformation(
-                //     "Realtime OEE snapshot calculated. Machine={Machine}, OrderId={OrderId}, SessionId={SessionId}, Product={Product}, State={State}, ActualQty={ActualQty}, TotalQty={TotalQty}, PlannedQty={PlannedQty}, RunTime={RunTime}, StopTime={StopTime}, ErrorTime={ErrorTime}, ProductionTime={ProductionTime}, A={Availability}, P={Performance}, Q={Quality}, OEE={Oee}",
-                //     item.MachineCode,
-                //     item.OrderId,
-                //     item.SessionId,
-                //     item.ProductCode,
-                //     item.MachineState,
-                //     item.ActualQty,
-                //     item.TotalQty,
-                //     item.PlannedQty,
-                //     runTime,
-                //     stopTime,
-                //     errorTime,
-                //     productionTime,
-                //     item.Availability,
-                //     item.Performance,
-                //     item.Quality,
-                //     item.Oee);
             }
         }
 
@@ -512,19 +477,13 @@ public sealed class RealtimeSnapshotBuilder(
         ProductionContext context,
         PlcRawInterval raw,
         long metricAt,
-        string state,
-        out long runTime,
-        out long stopTime,
-        out long errorTime,
-        out long productionTime)
+        string state)
     {
         var product = ReadPrimaryProduct(context.ProductsJson);
-        var goodQty = DeltaOrZero(raw.ShotOkTotal, context.BaselineShotOkTotal, raw.Machine, OeeSignalCodes.ShotOkCount);
-        var ngQty = DeltaOrZero(raw.ShotNgTotal, context.BaselineShotNgTotal, raw.Machine, OeeSignalCodes.ShotNgCount);
-        runTime = DeltaOrZero(raw.RunTimeTotalSec, context.BaselineRunTimeTotalSec, raw.Machine, OeeSignalCodes.RunTimeTotal);
-        stopTime = DeltaOrZero(raw.StopTimeTotalSec, context.BaselineStopTimeTotalSec, raw.Machine, OeeSignalCodes.StopTimeTotal);
-        errorTime = DeltaOrZero(raw.ErrorTimeTotalSec, context.BaselineErrorTimeTotalSec, raw.Machine, OeeSignalCodes.ErrorTimeTotal);
-        productionTime = Math.Max(0, metricAt - context.ActivePeriodStartAt);
+        var goodQty = DeltaOrZero(raw.ShotOkTotal, context.BaselineShotOkTotal);
+        var ngQty = DeltaOrZero(raw.ShotNgTotal, context.BaselineShotNgTotal);
+        var runTime = DeltaOrZero(raw.RunTimeTotalSec, context.BaselineRunTimeTotalSec);
+        var productionTime = Math.Max(0, metricAt - context.ActivePeriodStartAt);
         var actualQty = goodQty + ngQty;
         var cycleTimeSeconds = product.EffectiveCycleTime > 0
             ? product.EffectiveCycleTime
@@ -605,22 +564,7 @@ public sealed class RealtimeSnapshotBuilder(
         context.UpdatedAt = updatedAt;
     }
 
-    private long DeltaOrZero(long current, long baseline, string machine, string signalCode)
-    {
-        var delta = current - baseline;
-        if (delta >= 0)
-        {
-            return delta;
-        }
-
-        // logger.LogWarning(
-        //     "Realtime OEE delta was negative and was clamped to zero. Machine={Machine}, SignalCode={SignalCode}, Current={Current}, Baseline={Baseline}",
-        //     machine,
-        //     signalCode,
-        //     current,
-        //     baseline);
-        return 0;
-    }
+    private static long DeltaOrZero(long current, long baseline) => Math.Max(0, current - baseline);
 
     private static OeeProductDefinition ReadPrimaryProduct(string productsJson)
     {
@@ -1340,7 +1284,7 @@ public sealed class MesSyncOutboxDispatcher(
                 await repository.MarkSyncOutboxMessagesFailedAsync(ids, ex.Message, nextAttemptAt, cancellationToken);
                 failed += ids.Length;
                 logger.LogWarning(
-                    ex,
+                    null,
                     "MES sync outbox batch failed. Endpoint={Endpoint}, Items={ItemCount}, NextAttemptAt={NextAttemptAt}",
                     group.Key,
                     ids.Length,
@@ -1366,7 +1310,8 @@ public sealed class MesSyncOutboxDispatcher(
 
         var payload = new JsonObject
         {
-            ["schema_version"] = 1,
+            ["schema_version"] = messageList.Any(message =>
+                message.Topic.Equals(SyncOutboxTopics.RealtimeSnapshot, StringComparison.OrdinalIgnoreCase)) ? 2 : 1,
             ["gateway_id"] = gatewayId,
             ["created_at"] = createdAt,
             ["items"] = items
@@ -1387,8 +1332,7 @@ public sealed class RealtimeSnapshotSyncService(
     IRawDataCaptureService rawDataCaptureService,
     IOeeLocalProcessingService localProcessingService,
     ISyncOutboxDispatcher outboxDispatcher,
-    IRealtimeSnapshotSyncStatusStore statusStore,
-    ILogger<RealtimeSnapshotSyncService> logger) : IRealtimeSnapshotSyncService
+    IRealtimeSnapshotSyncStatusStore statusStore) : IRealtimeSnapshotSyncService
 {
     public async Task<RealtimeSnapshotBuildResult> SyncAsync(string gatewayId, CancellationToken cancellationToken)
     {
@@ -1400,19 +1344,11 @@ public sealed class RealtimeSnapshotSyncService(
         var build = processed.RealtimeSnapshot;
         if (build.Payload.Items.Count == 0)
         {
-            // logger.LogDebug(
-            //     "No realtime snapshot items were built. RawIntervals={RawIntervals}, Skipped={Skipped}",
-            //     build.RawIntervalCount,
-            //     build.SkippedItemCount);
             return build;
         }
 
-        var payloadJson = JsonSerializer.Serialize(build.Payload, new JsonSerializerOptions(JsonSerializerDefaults.Web));
-        // logger.LogInformation("Realtime OEE snapshot payload enqueued. PayloadJson={PayloadJson}", payloadJson);
-
         if (!current.RealtimeSnapshotsEnabled)
         {
-            // logger.LogDebug("Realtime snapshot sync topic is disabled; realtime outbox dispatch skipped");
             return build;
         }
 

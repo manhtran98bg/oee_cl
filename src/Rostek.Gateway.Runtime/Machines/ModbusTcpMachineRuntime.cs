@@ -165,7 +165,7 @@ public sealed class ModbusTcpMachineRuntime(
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "Failed to connect Modbus TCP machine {MachineCode}", current.MachineCode);
+            logger.LogWarning(null, "Failed to connect Modbus TCP machine {MachineCode}", current.MachineCode);
             SetStatus(MachineRuntimeState.Reconnecting, ex.Message, incrementStart: false);
             valueStore.MarkOffline(current.MachineCode, ex.Message);
             return null;
