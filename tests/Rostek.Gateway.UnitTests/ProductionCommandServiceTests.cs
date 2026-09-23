@@ -76,6 +76,31 @@ public sealed class ProductionCommandServiceTests
     }
 
     [Fact]
+    public async Task Start_after_paused_order_creates_new_session()
+    {
+        var repository = new InMemoryOeeLocalRepository();
+        var service = CreateService(repository);
+        await service.HandleBatchAsync(Batch(100, [StartItem("CMD-001", "M16-01", "MO-001", "SP-001", 16m)]), CancellationToken.None);
+
+        var pause = await service.HandleBatchAsync(Batch(110, [CommandItem("CMD-002", "M16-01", "pause", "MO-001")]), CancellationToken.None);
+        var start = await service.HandleBatchAsync(Batch(120, [StartItem("CMD-003", "M16-01", "MO-001", "SP-001", 16m)]), CancellationToken.None);
+
+        Assert.True(pause.Accepted);
+        Assert.Equal("pause", Assert.Single(pause.Items).Status);
+        Assert.True(start.Accepted);
+        var context = Assert.Single(repository.Contexts);
+        Assert.Equal("M16-01-MO-001-120", context.SessionId);
+        Assert.Equal(2, context.CurrentPlcPeriodIndex);
+        Assert.Contains(repository.Periods, period =>
+            period.PeriodId == "M16-01-MO-001-100" &&
+            period.Status == "paused" &&
+            period.EndAt == 110);
+        Assert.Contains(repository.Periods, period =>
+            period.PeriodId == "M16-01-MO-001-120" &&
+            period.Status == "active");
+    }
+
+    [Fact]
     public async Task Pause_and_stop_target_context_by_machine_and_order()
     {
         var repository = new InMemoryOeeLocalRepository();
@@ -86,12 +111,16 @@ public sealed class ProductionCommandServiceTests
         ]), CancellationToken.None);
 
         var pause = await service.HandleBatchAsync(Batch(110, [CommandItem("CMD-003", "M16-01", "pause", "MO-002")]), CancellationToken.None);
+        Assert.Single(repository.Contexts, context => context.OrderId == "MO-001");
+        Assert.DoesNotContain(repository.Contexts, context => context.OrderId == "MO-002");
         var stop = await service.HandleBatchAsync(Batch(120, [CommandItem("CMD-004", "M16-01", "stop", "MO-001")]), CancellationToken.None);
 
         Assert.True(pause.Accepted);
         Assert.True(stop.Accepted);
-        Assert.DoesNotContain(repository.Contexts, context => context.OrderId == "MO-001");
-        Assert.Equal("pause", repository.Contexts.Single(context => context.OrderId == "MO-002").Status);
+        Assert.Empty(repository.Contexts);
+        Assert.Equal("pause", Assert.Single(pause.Items).Status);
+        Assert.Equal("paused", repository.Periods.Single(period => period.OrderId == "MO-002").Status);
+        Assert.Equal(110, repository.Periods.Single(period => period.OrderId == "MO-002").EndAt);
         Assert.Equal("stopped", repository.Periods.Single(period => period.OrderId == "MO-001").Status);
     }
 
@@ -148,10 +177,81 @@ public sealed class ProductionCommandServiceTests
 
         Assert.True(response.Accepted);
         var metric = Assert.Single(repository.ProductionMetrics, item => item.BucketType == "session" && item.IsFinal);
+        Assert.StartsWith("GW-M16-01:session:", metric.MetricId, StringComparison.Ordinal);
         Assert.Equal(11, metric.ActualQty);
         Assert.Equal(11, metric.TotalQty);
         Assert.Equal(11, orderQuantityCache.GetCompletedQty("M16-01", "MO-001"));
         Assert.Contains(repository.SyncOutboxMessages, item => item.Topic == SyncOutboxTopics.ProductionMetric);
+    }
+
+    [Fact]
+    public async Task Pause_finalizes_session_closes_state_event_and_updates_order_quantity_cache()
+    {
+        var repository = new InMemoryOeeLocalRepository();
+        var contextCache = new ProductionContextCache();
+        var orderQuantityCache = new OrderQuantityCache();
+        var service = CreateService(repository, contextCache, orderQuantityCache);
+        await service.HandleBatchAsync(Batch(100, [StartItem("CMD-001", "M16-01", "MO-001", "SP-001", 10m)]), CancellationToken.None);
+        var context = repository.Contexts.Single();
+        context.BaselineRawId = "baseline";
+        context.BaselineCapturedAt = 100;
+        context.BaselineShotOkTotal = 10;
+        context.BaselineShotNgTotal = 1;
+        context.BaselineRunTimeTotalSec = 5;
+        await repository.SaveProductionContextAsync(context, CancellationToken.None);
+        contextCache.Upsert(context);
+        repository.RawIntervals.Add(new PlcRawInterval
+        {
+            Machine = "M16-01",
+            ReadAt = 120,
+            PlcPeriodIndex = 1,
+            RunState = OeeRunStates.Run,
+            PeriodActive = 1,
+            ShotOkTotal = 20,
+            ShotNgTotal = 2,
+            RunTimeTotalSec = 20,
+            CycleTimeMs = 10000
+        });
+        repository.MachineStateEvents.Add(new MachineStateEvent
+        {
+            EventId = "GW-M16-01:M16-01:M16-01-MO-001-100:100:run",
+            GatewayId = "GW-M16-01",
+            Machine = "M16-01",
+            OrderId = "MO-001",
+            SessionId = context.SessionId,
+            State = OeeRunStates.Run,
+            StartAt = 100,
+            EndAt = 120,
+            DurationSec = 20,
+            IsOpen = true,
+            CreatedAt = 100,
+            UpdatedAt = 120
+        });
+
+        var response = await service.HandleBatchAsync(Batch(130, [CommandItem("CMD-002", "M16-01", "pause", "MO-001")]), CancellationToken.None);
+
+        Assert.True(response.Accepted);
+        Assert.Equal("pause", Assert.Single(response.Items).Status);
+        Assert.Empty(repository.Contexts);
+        Assert.Empty(contextCache.GetCapturableByMachine("M16-01"));
+        var period = Assert.Single(repository.Periods);
+        Assert.Equal("paused", period.Status);
+        Assert.Equal(130, period.EndAt);
+        var metric = Assert.Single(repository.ProductionMetrics, item => item.BucketType == "session" && item.IsFinal);
+        Assert.StartsWith("GW-M16-01:session:", metric.MetricId, StringComparison.Ordinal);
+        Assert.Equal(11, metric.ActualQty);
+        Assert.Equal(11, metric.TotalQty);
+        Assert.Equal(11, orderQuantityCache.GetCompletedQty("M16-01", "MO-001"));
+        var reloadedOrderQuantityCache = new OrderQuantityCache();
+        reloadedOrderQuantityCache.ReplaceCompletedSessions(
+            await repository.ListFinalSessionProductionMetricsAsync(CancellationToken.None));
+        Assert.Equal(11, reloadedOrderQuantityCache.GetCompletedQty("M16-01", "MO-001"));
+        var stateEvent = Assert.Single(repository.MachineStateEvents);
+        Assert.False(stateEvent.IsOpen);
+        Assert.Equal(130, stateEvent.EndAt);
+        Assert.Equal(30, stateEvent.DurationSec);
+        Assert.Contains(repository.SyncOutboxMessages, item => item.DedupeKey == $"production_metric:{metric.MetricId}");
+        Assert.Contains(repository.SyncOutboxMessages, item => item.DedupeKey == $"machine_state_event:{stateEvent.EventId}");
     }
 
     [Fact]

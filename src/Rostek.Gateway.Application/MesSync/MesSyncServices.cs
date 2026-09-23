@@ -103,7 +103,7 @@ public sealed class ProductionCommandService(
         var response = status switch
         {
             "active" => await StartAsync(request, machine, orderId, now, cancellationToken),
-            "pause" => await PauseAsync(request, machine, orderId, now, cancellationToken),
+            "pause" => await PauseAsync(request, gatewayId, machine, orderId, now, cancellationToken),
             "stopped" => await StopAsync(request, gatewayId, machine, orderId, now, cancellationToken),
             _ => Reject(machine, request.CommandCode, orderId, null, "action must be start, pause, or stop.")
         };
@@ -167,23 +167,20 @@ public sealed class ProductionCommandService(
 
     private async Task<ProductionCommandResponse> PauseAsync(
         ProductionCommandItemRequest request,
+        string gatewayId,
         string machine,
         string orderId,
         long now,
-        CancellationToken cancellationToken)
-    {
-        var context = await repository.GetActiveProductionContextAsync(machine, orderId, cancellationToken);
-        if (context is null)
-        {
-            return Reject(machine, request.CommandCode, orderId, null, "active production context was not found for machine/order.");
-        }
-
-        context.Status = "pause";
-        context.UpdatedAt = now;
-        await repository.SaveProductionContextAsync(context, cancellationToken);
-        productionContextCache.Upsert(context);
-        return new ProductionCommandResponse(true, context.Machine, request.CommandCode.Trim(), context.Status, context.OrderId, context.SessionId, "Accepted");
-    }
+        CancellationToken cancellationToken) =>
+        await EndSessionAsync(
+            request,
+            gatewayId,
+            machine,
+            orderId,
+            now,
+            periodStatus: "paused",
+            responseStatus: "pause",
+            cancellationToken);
 
     private async Task<ProductionCommandResponse> StopAsync(
         ProductionCommandItemRequest request,
@@ -191,6 +188,25 @@ public sealed class ProductionCommandService(
         string machine,
         string orderId,
         long now,
+        CancellationToken cancellationToken) =>
+        await EndSessionAsync(
+            request,
+            gatewayId,
+            machine,
+            orderId,
+            now,
+            periodStatus: "stopped",
+            responseStatus: "stopped",
+            cancellationToken);
+
+    private async Task<ProductionCommandResponse> EndSessionAsync(
+        ProductionCommandItemRequest request,
+        string gatewayId,
+        string machine,
+        string orderId,
+        long endedAt,
+        string periodStatus,
+        string responseStatus,
         CancellationToken cancellationToken)
     {
         var context = await repository.GetActiveProductionContextAsync(machine, orderId, cancellationToken);
@@ -199,21 +215,21 @@ public sealed class ProductionCommandService(
             return Reject(machine, request.CommandCode, orderId, null, "active production context was not found for machine/order.");
         }
 
-        await TryFinalizeSessionMetricAsync(gatewayId, context, now, cancellationToken);
-        await CloseOpenMachineStateEventAsync(context, now, cancellationToken);
-        await repository.CloseProductionPeriodAsync(context.SessionId, now, "stopped", cancellationToken);
+        await TryFinalizeSessionMetricAsync(gatewayId, context, endedAt, cancellationToken);
+        await CloseOpenMachineStateEventAsync(context, endedAt, cancellationToken);
+        await repository.CloseProductionPeriodAsync(context.SessionId, endedAt, periodStatus, cancellationToken);
         await repository.DeleteProductionContextAsync(context.SessionId, cancellationToken);
         productionContextCache.Remove(context.SessionId);
-        return new ProductionCommandResponse(true, context.Machine, request.CommandCode.Trim(), "stopped", context.OrderId, context.SessionId, "Accepted");
+        return new ProductionCommandResponse(true, context.Machine, request.CommandCode.Trim(), responseStatus, context.OrderId, context.SessionId, "Accepted");
     }
 
     private async Task TryFinalizeSessionMetricAsync(
         string gatewayId,
         ProductionContext context,
-        long stoppedAt,
+        long endedAt,
         CancellationToken cancellationToken)
     {
-        var metric = await productionMetricBuilder.BuildFinalSessionAsync(gatewayId, context, stoppedAt, cancellationToken);
+        var metric = await productionMetricBuilder.BuildFinalSessionAsync(gatewayId, context, endedAt, cancellationToken);
         if (metric is null)
         {
             return;
@@ -224,7 +240,7 @@ public sealed class ProductionCommandService(
 
         if (options.Value.ProductionMetricsEnabled)
         {
-            await EnqueueProductionMetricAsync(metric, stoppedAt, cancellationToken);
+            await EnqueueProductionMetricAsync(metric, endedAt, cancellationToken);
         }
 
         var added = orderQuantityCache.AddCompletedSession(context.Machine, context.OrderId, context.SessionId, metric.ActualQty);

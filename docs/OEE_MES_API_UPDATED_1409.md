@@ -108,6 +108,8 @@ Content-Type: application/json
 
 ### 2.3 Pause Một Lệnh
 
+`pause` kết thúc session hiện tại. Gateway chốt session metric, đóng `production_period` với trạng thái `paused`, xoá session khỏi current production context và trả lại `session_id` vừa kết thúc. Khi MES gửi `start` lại cùng machine/order, Gateway tạo một session mới.
+
 ```json
 {
   "schema_version": 1,
@@ -200,8 +202,10 @@ Response rules:
 - Mỗi item được xử lý độc lập.
 - `accepted = false` ở top-level nếu có ít nhất một item bị reject.
 - `session_id` do Gateway tự sinh khi `start`.
-- `pause` và `stop` tìm session hiện tại theo `machine_code + order_id`.
-- Sau `stop`, Gateway đóng history trong `production_period` và xoá session khỏi `production_context`.
+- `pause` và `stop` tìm session hiện tại theo `machine_code + order_id`, chốt session metric và trả lại `session_id` vừa kết thúc.
+- Sau `pause`, Gateway đóng history với trạng thái `paused` và xoá session khỏi `production_context`.
+- Sau `stop`, Gateway đóng history với trạng thái `stopped` và xoá session khỏi `production_context`.
+- `start` sau `pause` hoặc `stop` tạo một `session_id` mới.
 
 ## 3. Sync API: Gateway Gửi Realtime OEE Snapshot Lên MES
 
@@ -315,7 +319,7 @@ Item schema:
 
 Quy tắc hiển thị:
 
-- Gateway gửi một item cho mỗi active/pause session nếu máy đang có lệnh sản xuất.
+- Gateway gửi một item cho mỗi active session nếu máy đang có lệnh sản xuất.
 - Gateway gửi đúng một machine-level item với `order_id = null` nếu máy enabled nhưng chưa có lệnh.
 - Máy enabled chưa có dữ liệu runtime được gửi với `machine_state = "disconnect"`.
 - MES dùng `machine_code` để upsert thiết bị và hiển thị trạng thái `Chưa có lệnh` khi `order_id = null`.
@@ -514,7 +518,7 @@ Item schema:
 - Khi qua giờ mới, Gateway gửi bucket giờ cũ lần cuối: `is_final = true`.
 - `day` update mỗi 5 phút nếu ngày đang chạy: `is_final = false`.
 - Khi qua ngày mới, Gateway gửi bucket ngày cũ lần cuối: `is_final = true`.
-- `period` chốt khi stop session: `is_final = true`.
+- `session` chốt khi pause hoặc stop session: `is_final = true`.
 - `order` là rolling summary: thường `is_final = false` cho tới khi sau này có command đóng order thật.
 - MES nên xử lý idempotent bằng cách upsert theo `metric_id`.
 
