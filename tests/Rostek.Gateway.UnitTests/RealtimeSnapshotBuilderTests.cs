@@ -111,8 +111,8 @@ public sealed class RealtimeSnapshotBuilderTests
         Assert.Equal("M16-01-TEST_SESSION", item.SessionId);
         Assert.Equal("SP-001", item.ProductCode);
         Assert.Equal("KHUON-001", item.MoldCode);
-        Assert.Equal(23, item.ActualQty);
-        Assert.Equal(63, item.TotalQty);
+        Assert.Equal(92, item.ActualQty);
+        Assert.Equal(132, item.TotalQty);
         Assert.Equal(16m, item.PlannedQty);
         Assert.Equal(13.333333m, item.Availability);
         Assert.Equal(100m, item.Performance);

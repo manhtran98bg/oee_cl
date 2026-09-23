@@ -406,6 +406,15 @@ public sealed class ProductionCommandService(
     }
 }
 
+internal static class OeeQuantityCalculator
+{
+    public static long FromShotCount(long shotCount, decimal cavity)
+    {
+        var effectiveCavity = cavity > 0 ? cavity : 1m;
+        return decimal.ToInt64(decimal.Floor(shotCount * effectiveCavity));
+    }
+}
+
 public sealed class RealtimeSnapshotBuilder(
     IOeeLocalRepository repository,
     IProductionContextCache productionContextCache,
@@ -500,7 +509,8 @@ public sealed class RealtimeSnapshotBuilder(
         var ngQty = DeltaOrZero(raw.ShotNgTotal, context.BaselineShotNgTotal);
         var runTime = DeltaOrZero(raw.RunTimeTotalSec, context.BaselineRunTimeTotalSec);
         var productionTime = Math.Max(0, metricAt - context.ActivePeriodStartAt);
-        var actualQty = goodQty + ngQty;
+        var shotQty = checked(goodQty + ngQty);
+        var actualQty = OeeQuantityCalculator.FromShotCount(shotQty, product.Gain);
         var cycleTimeSeconds = product.EffectiveCycleTime > 0
             ? product.EffectiveCycleTime
             : raw.CycleTimeMs > 0 ? raw.CycleTimeMs / 1000m : 0m;
@@ -509,7 +519,7 @@ public sealed class RealtimeSnapshotBuilder(
             : 0m;
         var availability = Percent(runTime, productionTime);
         var performance = plannedQty > 0 ? Percent(actualQty, plannedQty) : 0m;
-        var quality = actualQty > 0 ? Percent(goodQty, actualQty) : 0m;
+        var quality = shotQty > 0 ? Percent(goodQty, shotQty) : 0m;
         var oee = Decimal.Round(availability * performance * quality / 10000m, 6);
         var totalQty = orderQuantityCache.GetCompletedQty(raw.Machine, context.OrderId) + actualQty;
 
@@ -1121,7 +1131,8 @@ public sealed class ProductionMetricBuilder(
             return null;
         }
 
-        var actualQty = goodQty + ngQty;
+        var shotQty = checked(goodQty + ngQty);
+        var actualQty = OeeQuantityCalculator.FromShotCount(shotQty, product.Gain);
         var productionTime = productionTimeOverride ?? Math.Max(0, bucketEnd - bucketStart);
         var cycleTime = product.EffectiveCycleTime > 0
             ? product.EffectiveCycleTime
@@ -1131,7 +1142,7 @@ public sealed class ProductionMetricBuilder(
             : 0m;
         var availability = Percent(runTime, productionTime);
         var performance = plannedQty > 0 ? Percent(actualQty, plannedQty) : 0m;
-        var quality = actualQty > 0 ? Percent(goodQty, actualQty) : 0m;
+        var quality = shotQty > 0 ? Percent(goodQty, shotQty) : 0m;
         var oee = decimal.Round(availability * performance * quality / 10000m, 6);
         var metricId = BuildMetricId(gatewayId, bucketType, context.Machine, context.OrderId, context.SessionId, bucketStart);
 

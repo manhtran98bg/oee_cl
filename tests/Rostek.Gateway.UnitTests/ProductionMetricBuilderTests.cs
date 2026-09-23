@@ -31,8 +31,8 @@ public sealed class ProductionMetricBuilderTests
 
         var session = result.Metrics.Single(item => item.BucketType == "session");
         Assert.Equal("GW-M16-01:session:M16-01:LSX-001:SESSION-001:100", session.MetricId);
-        Assert.Equal(55, session.ActualQty);
-        Assert.Equal(55, session.TotalQty);
+        Assert.Equal(220, session.ActualQty);
+        Assert.Equal(220, session.TotalQty);
         Assert.Equal(12m, session.PlannedQty);
         Assert.Equal(1000, session.TargetQty);
         Assert.False(session.IsFinal);

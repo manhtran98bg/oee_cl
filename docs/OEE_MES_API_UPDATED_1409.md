@@ -308,8 +308,8 @@ Item schema:
 | `product_code` | string/null | no | Mã sản phẩm chính; `null` khi máy chưa có production context. |
 | `mold_code` | string/null | no | Mã khuôn. |
 | `machine_state` | string | yes | `run`, `stop`, `error`, `disconnect`. |
-| `actual_qty` | integer | yes | Sản lượng hiện tại của session. |
-| `total_qty` | integer | yes | Tổng sản lượng hiện tại đã sản xuất của order, gồm các session đã hoàn thành và session hiện tại. |
+| `actual_qty` | integer | yes | Sản lượng hiện tại của session: `(shot_ok_delta + shot_ng_delta) × cavity`. |
+| `total_qty` | integer | yes | Tổng `actual_qty` của order, gồm các session đã hoàn thành và session hiện tại. |
 | `planned_qty` | number | yes | Sản lượng theo kế hoạch của session. |
 | `availability` | number | yes | A, phần trăm `0..100`. |
 | `performance` | number | yes | P, phần trăm `0..100`. |
@@ -497,7 +497,7 @@ Item schema:
 | `product_code` | string | yes | Mã sản phẩm chính. |
 | `mold_code` | string/null | no | Mã khuôn. |
 | `machine_state` | string | yes | `run`, `stop`, `error`, `disconnect`, là trạng thái tại thời điểm build metric. |
-| `actual_qty` | integer | yes | Sản lượng trong phạm vi metric. Với `hour/day` là sản lượng phát sinh trong bucket; với `period` là sản lượng của session; với `order` là tổng sản lượng hiện tại của order. |
+| `actual_qty` | integer | yes | Sản lượng trong phạm vi metric, tính bằng `(shot_ok_delta + shot_ng_delta) × cavity`. Với `hour/day` là sản lượng phát sinh trong bucket; với `session` là sản lượng của session; với `order` là tổng sản lượng hiện tại của order. |
 | `total_qty` | integer | yes | Tổng sản lượng hiện tại của order tại `bucket_end`. |
 | `planned_qty` | number | yes | Sản lượng kế hoạch trong phạm vi metric. |
 | `target_qty` | integer | yes | Sản lượng mục tiêu của order. |
