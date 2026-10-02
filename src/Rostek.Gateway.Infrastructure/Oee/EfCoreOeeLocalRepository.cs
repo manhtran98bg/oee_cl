@@ -281,17 +281,31 @@ public sealed class EfCoreOeeLocalRepository(OeeDbContext dbContext) : IOeeLocal
 
     public async Task SaveMachineStateEventsAsync(IReadOnlyCollection<MachineStateEvent> stateEvents, CancellationToken cancellationToken)
     {
-        foreach (var stateEvent in stateEvents)
+        var distinctEvents = stateEvents
+            .GroupBy(stateEvent => stateEvent.EventId, StringComparer.Ordinal)
+            .Select(group => group.Last())
+            .ToArray();
+
+        foreach (var stateEvent in distinctEvents)
         {
-            if (dbContext.Entry(stateEvent).State != EntityState.Detached)
+            var tracked = dbContext.MachineStateEvents.Local.FirstOrDefault(
+                item => string.Equals(item.EventId, stateEvent.EventId, StringComparison.Ordinal));
+            if (tracked is not null)
             {
+                if (!ReferenceEquals(tracked, stateEvent))
+                {
+                    dbContext.Entry(tracked).CurrentValues.SetValues(stateEvent);
+                }
+
                 continue;
             }
 
-            var exists = await dbContext.MachineStateEvents.AnyAsync(item => item.EventId == stateEvent.EventId, cancellationToken);
-            if (exists)
+            var existing = await dbContext.MachineStateEvents.FirstOrDefaultAsync(
+                item => item.EventId == stateEvent.EventId,
+                cancellationToken);
+            if (existing is not null)
             {
-                dbContext.MachineStateEvents.Update(stateEvent);
+                dbContext.Entry(existing).CurrentValues.SetValues(stateEvent);
             }
             else
             {
@@ -299,7 +313,7 @@ public sealed class EfCoreOeeLocalRepository(OeeDbContext dbContext) : IOeeLocal
             }
         }
 
-        if (stateEvents.Count > 0)
+        if (distinctEvents.Length > 0)
         {
             await dbContext.SaveChangesAsync(cancellationToken);
         }

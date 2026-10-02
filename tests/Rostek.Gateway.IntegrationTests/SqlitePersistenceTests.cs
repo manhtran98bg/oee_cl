@@ -239,6 +239,55 @@ public sealed class SqlitePersistenceTests
     }
 
     [Fact]
+    public async Task Oee_repository_updates_machine_state_event_when_another_instance_is_already_tracked()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        await using var db = CreateOeeContext(connection);
+        await db.Database.EnsureCreatedAsync();
+        var repository = new EfCoreOeeLocalRepository(db);
+        var original = StateEvent("event-1", endAt: 10, durationSec: 0);
+
+        await repository.SaveMachineStateEventsAsync([original], CancellationToken.None);
+        var tracked = await repository.GetOpenMachineStateEventAsync(
+            original.Machine,
+            original.OrderId,
+            original.SessionId,
+            CancellationToken.None);
+        var updatedCopy = StateEvent("event-1", endAt: 20, durationSec: 10);
+
+        await repository.SaveMachineStateEventsAsync([updatedCopy], CancellationToken.None);
+
+        Assert.NotNull(tracked);
+        Assert.Equal(20, tracked.EndAt);
+        Assert.Equal(10, tracked.DurationSec);
+        var persisted = await db.MachineStateEvents.AsNoTracking().SingleAsync();
+        Assert.Equal(20, persisted.EndAt);
+        Assert.Equal(10, persisted.DurationSec);
+    }
+
+    [Fact]
+    public async Task Oee_repository_keeps_last_machine_state_event_when_batch_contains_duplicate_keys()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        await using var db = CreateOeeContext(connection);
+        await db.Database.EnsureCreatedAsync();
+        var repository = new EfCoreOeeLocalRepository(db);
+
+        await repository.SaveMachineStateEventsAsync(
+            [
+                StateEvent("event-1", endAt: 10, durationSec: 0),
+                StateEvent("event-1", endAt: 25, durationSec: 15)
+            ],
+            CancellationToken.None);
+
+        var persisted = await db.MachineStateEvents.AsNoTracking().SingleAsync();
+        Assert.Equal(25, persisted.EndAt);
+        Assert.Equal(15, persisted.DurationSec);
+    }
+
+    [Fact]
     public async Task Unique_template_signal_code_is_enforced_per_template()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
@@ -434,6 +483,23 @@ public sealed class SqlitePersistenceTests
             NextAttemptAt = 0,
             CreatedAt = 1,
             UpdatedAt = 1
+        };
+
+    private static MachineStateEvent StateEvent(string eventId, long endAt, long durationSec) =>
+        new()
+        {
+            EventId = eventId,
+            GatewayId = "GW-01",
+            Machine = "M16-01",
+            OrderId = "ORDER-01",
+            SessionId = "SESSION-01",
+            State = OeeRunStates.Run,
+            StartAt = 10,
+            EndAt = endAt,
+            DurationSec = durationSec,
+            IsOpen = true,
+            CreatedAt = 10,
+            UpdatedAt = endAt
         };
 
     private static PlcRawInterval Raw(string machine, long readAt, long shotOkTotal, long runTimeTotalSec = 0) =>
