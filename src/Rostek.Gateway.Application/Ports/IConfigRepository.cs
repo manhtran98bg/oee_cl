@@ -18,6 +18,7 @@ public interface IConfigRepository
     void RemoveTemplateSignal(TemplateSignal signal);
 
     Task<List<Machine>> ListMachinesAsync(MachineQuery query, CancellationToken cancellationToken);
+    Task<List<Machine>> ListScheduleMachinesAsync(CancellationToken cancellationToken);
     Task<Machine?> GetMachineAsync(Guid id, bool includeDetails, CancellationToken cancellationToken);
     Task<Machine?> GetMachineByCodeAsync(string code, bool includeDetails, CancellationToken cancellationToken);
     Task<bool> MachineCodeExistsAsync(string code, Guid? exceptId, CancellationToken cancellationToken);

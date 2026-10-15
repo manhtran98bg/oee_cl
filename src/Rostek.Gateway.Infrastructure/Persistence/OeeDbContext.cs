@@ -11,9 +11,38 @@ public sealed class OeeDbContext(DbContextOptions<OeeDbContext> options) : DbCon
     public DbSet<MachineStateEvent> MachineStateEvents => Set<MachineStateEvent>();
     public DbSet<SyncOutboxMessage> SyncOutboxMessages => Set<SyncOutboxMessage>();
     public DbSet<ProductionMetric> ProductionMetrics => Set<ProductionMetric>();
+    public DbSet<ProductionSchedule> ProductionSchedules => Set<ProductionSchedule>();
+    public DbSet<ProductionScheduleRun> ProductionScheduleRuns => Set<ProductionScheduleRun>();
+    public DbSet<ProductionScheduleMachineRun> ProductionScheduleMachineRuns => Set<ProductionScheduleMachineRun>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        modelBuilder.Entity<ProductionSchedule>(entity =>
+        {
+            entity.ToTable("production_schedule");
+            entity.HasKey(item => item.Id);
+            entity.Property(item => item.Name).HasMaxLength(150).IsRequired();
+            entity.Property(item => item.Target).HasConversion<string>();
+            entity.Property(item => item.Kind).HasConversion<string>();
+            entity.HasIndex(item => new { item.Enabled, item.Deleted, item.NextRunAt });
+        });
+        modelBuilder.Entity<ProductionScheduleRun>(entity =>
+        {
+            entity.ToTable("production_schedule_run");
+            entity.HasKey(item => item.Id);
+            entity.HasIndex(item => new { item.ScheduleId, item.ScheduledAt }).IsUnique();
+            entity.HasIndex(item => item.Status);
+            entity.HasOne<ProductionSchedule>().WithMany().HasForeignKey(item => item.ScheduleId).OnDelete(DeleteBehavior.Restrict);
+        });
+        modelBuilder.Entity<ProductionScheduleMachineRun>(entity =>
+        {
+            entity.ToTable("production_schedule_machine_run");
+            entity.HasKey(item => item.Id);
+            entity.HasIndex(item => new { item.RunId, item.MachineId }).IsUnique();
+            entity.HasIndex(item => new { item.Status, item.NextAttemptAt });
+            entity.HasOne<ProductionScheduleRun>().WithMany().HasForeignKey(item => item.RunId).OnDelete(DeleteBehavior.Restrict);
+        });
+
         modelBuilder.Entity<ProductionContext>(entity =>
         {
             entity.ToTable("production_context");

@@ -231,6 +231,9 @@ public interface IProductionCommandService
 {
     Task<ProductionCommandBatchResponse> HandleBatchAsync(ProductionCommandBatchRequest request, CancellationToken cancellationToken);
     Task<ProductionCommandResponse> HandleAsync(ProductionCommandRequest request, CancellationToken cancellationToken);
+    // The schedule runner owns the OEE gate and transaction, including the execution record.
+    Task<Rostek.Gateway.Application.Scheduling.ProductionRotationResult> RotateActiveSessionsAsync(
+        string gatewayId, string machineCode, long executedAt, CancellationToken cancellationToken);
 }
 
 public interface IRealtimeSnapshotBuilder

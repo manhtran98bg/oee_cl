@@ -4,6 +4,10 @@ namespace Rostek.Gateway.Application.Oee;
 
 public interface IOeeLocalRepository
 {
+    // In-memory adapters execute directly; persistent adapters must provide atomicity and deferred cache updates.
+    Task<T> ExecuteTransactionAsync<T>(Func<CancellationToken, Task<T>> action, CancellationToken cancellationToken) => action(cancellationToken);
+    void AfterCommit(Action action) => action();
+
     Task<ProductionContext?> GetProductionContextAsync(string sessionId, CancellationToken cancellationToken);
     Task<ProductionContext?> GetActiveProductionContextAsync(string machine, string orderId, CancellationToken cancellationToken);
     Task<IReadOnlyList<ProductionContext>> ListProductionContextsAsync(CancellationToken cancellationToken);

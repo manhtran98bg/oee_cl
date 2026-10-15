@@ -8,6 +8,52 @@ namespace Rostek.Gateway.Infrastructure.Oee;
 
 public sealed class EfCoreOeeLocalRepository(OeeDbContext dbContext) : IOeeLocalRepository
 {
+    private List<Action>? _afterCommit;
+
+    public async Task<T> ExecuteTransactionAsync<T>(Func<CancellationToken, Task<T>> action, CancellationToken cancellationToken)
+    {
+        if (_afterCommit is not null)
+        {
+            return await action(cancellationToken);
+        }
+
+        T result;
+        var callbacks = new List<Action>();
+        await using (var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken))
+        {
+            _afterCommit = callbacks;
+            try
+            {
+                result = await action(cancellationToken);
+                await dbContext.SaveChangesAsync(cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+            }
+            catch
+            {
+                await transaction.RollbackAsync(CancellationToken.None);
+                dbContext.ChangeTracker.Clear();
+                throw;
+            }
+            finally
+            {
+                _afterCommit = null;
+            }
+        }
+
+        foreach (var callback in callbacks)
+        {
+            callback();
+        }
+
+        return result;
+    }
+
+    public void AfterCommit(Action action)
+    {
+        if (_afterCommit is null) action();
+        else _afterCommit.Add(action);
+    }
+
     public Task<ProductionContext?> GetProductionContextAsync(string sessionId, CancellationToken cancellationToken) =>
         dbContext.ProductionContexts.FirstOrDefaultAsync(
             context => context.SessionId == sessionId,

@@ -101,6 +101,9 @@ public sealed class EfCoreConfigRepository(GatewayDbContext dbContext) : IConfig
             .ToListAsync(cancellationToken);
     }
 
+    public Task<List<Machine>> ListScheduleMachinesAsync(CancellationToken cancellationToken) =>
+        dbContext.Machines.AsNoTracking().OrderBy(machine => machine.Code).ToListAsync(cancellationToken);
+
     public Task<Machine?> GetMachineAsync(Guid id, bool includeDetails, CancellationToken cancellationToken)
     {
         IQueryable<Machine> query = dbContext.Machines;

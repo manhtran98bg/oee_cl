@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Rostek.Gateway.Application.Oee;
 using Rostek.Gateway.Application.Ports;
+using Rostek.Gateway.Application.Scheduling;
 using Rostek.Gateway.Contracts.Runtime;
 using Rostek.Gateway.Domain.Entities;
 
@@ -17,8 +18,10 @@ public sealed class ProductionCommandService(
     IProductionMetricBuilder productionMetricBuilder,
     IOptions<MesSyncOptions> options,
     IConfigRepository configRepository,
-    ILogger<ProductionCommandService> logger) : IProductionCommandService
+    ILogger<ProductionCommandService> logger,
+    OeeProcessingGate? processingGate = null) : IProductionCommandService
 {
+    private readonly OeeProcessingGate _gate = processingGate ?? OeeProcessingGate.Shared;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
@@ -68,6 +71,17 @@ public sealed class ProductionCommandService(
     }
 
     private async Task<ProductionCommandResponse> HandleItemAsync(
+        ProductionCommandItemRequest request,
+        string gatewayId,
+        long now,
+        CancellationToken cancellationToken)
+    {
+        using var lease = await _gate.EnterAsync(cancellationToken);
+        return await repository.ExecuteTransactionAsync(
+            token => HandleItemCoreAsync(request, gatewayId, now, token), cancellationToken);
+    }
+
+    private async Task<ProductionCommandResponse> HandleItemCoreAsync(
         ProductionCommandItemRequest request,
         string gatewayId,
         long now,
@@ -161,7 +175,7 @@ public sealed class ProductionCommandService(
         context.UpdatedAt = now;
         await repository.SaveProductionContextAsync(context, cancellationToken);
         await repository.EnsureProductionPeriodAsync(context, context.ActivePeriodStartAt, cancellationToken);
-        productionContextCache.Upsert(context);
+        repository.AfterCommit(() => productionContextCache.Upsert(context));
         return new ProductionCommandResponse(true, context.Machine, request.CommandCode.Trim(), context.Status, context.OrderId, context.SessionId, "Accepted");
     }
 
@@ -219,7 +233,7 @@ public sealed class ProductionCommandService(
         await CloseOpenMachineStateEventAsync(context, endedAt, cancellationToken);
         await repository.CloseProductionPeriodAsync(context.SessionId, endedAt, periodStatus, cancellationToken);
         await repository.DeleteProductionContextAsync(context.SessionId, cancellationToken);
-        productionContextCache.Remove(context.SessionId);
+        repository.AfterCommit(() => productionContextCache.Remove(context.SessionId));
         return new ProductionCommandResponse(true, context.Machine, request.CommandCode.Trim(), responseStatus, context.OrderId, context.SessionId, "Accepted");
     }
 
@@ -243,15 +257,64 @@ public sealed class ProductionCommandService(
             await EnqueueProductionMetricAsync(metric, endedAt, cancellationToken);
         }
 
-        var added = orderQuantityCache.AddCompletedSession(context.Machine, context.OrderId, context.SessionId, metric.ActualQty);
-        logger.LogInformation(
-            "Final session metric saved. Machine={Machine}, OrderId={OrderId}, SessionId={SessionId}, ActualQty={ActualQty}, TotalQty={TotalQty}, AddedToOrderCache={AddedToOrderCache}",
-            context.Machine,
-            context.OrderId,
-            context.SessionId,
-            metric.ActualQty,
-            metric.TotalQty,
-            added);
+        repository.AfterCommit(() =>
+        {
+            var added = orderQuantityCache.AddCompletedSession(context.Machine, context.OrderId, context.SessionId, metric.ActualQty);
+            logger.LogInformation(
+                "Final session metric saved. Machine={Machine}, OrderId={OrderId}, SessionId={SessionId}, ActualQty={ActualQty}, TotalQty={TotalQty}, AddedToOrderCache={AddedToOrderCache}",
+                context.Machine,
+                context.OrderId,
+                context.SessionId,
+                metric.ActualQty,
+                metric.TotalQty,
+                added);
+        });
+    }
+
+    public async Task<ProductionRotationResult> RotateActiveSessionsAsync(
+        string gatewayId, string machineCode, long executedAt, CancellationToken cancellationToken)
+    {
+        var contexts = (await repository.ListCapturableProductionContextsAsync(machineCode, cancellationToken))
+            .Where(context => context.Status.Equals("active", StringComparison.OrdinalIgnoreCase) &&
+                !context.OrderId.Equals(OeeTestProductionContext.OrderId, StringComparison.OrdinalIgnoreCase)).ToList();
+        var boundary = await repository.GetLatestRawIntervalAsync(machineCode, cancellationToken);
+        var transitions = new List<SessionTransition>();
+        var warnings = new List<string>();
+        foreach (var previous in contexts)
+        {
+            if (boundary is null || previous.BaselineCapturedAt <= 0 ||
+                boundary.ShotOkTotal < previous.BaselineShotOkTotal || boundary.ShotNgTotal < previous.BaselineShotNgTotal ||
+                boundary.RunTimeTotalSec < previous.BaselineRunTimeTotalSec || boundary.StopTimeTotalSec < previous.BaselineStopTimeTotalSec ||
+                boundary.ErrorTimeTotalSec < previous.BaselineErrorTimeTotalSec)
+                warnings.Add($"Lệnh {previous.OrderId}: không đủ counter/baseline hợp lệ để chốt metric cũ.");
+
+            await EndSessionAsync(new ProductionCommandItemRequest { CommandCode = "SCHEDULE", OrderId = previous.OrderId },
+                gatewayId, previous.Machine, previous.OrderId, executedAt, "paused", "pause", cancellationToken);
+            var next = new ProductionContext
+            {
+                SessionId = $"SCH-{Guid.NewGuid():N}", Machine = previous.Machine, Status = "active",
+                OrderId = previous.OrderId, ServerOrderId = previous.ServerOrderId,
+                ProductsJson = previous.ProductsJson, ExtraJson = previous.ExtraJson,
+                ActivePeriodStartAt = executedAt, UpdatedAt = executedAt,
+                CurrentPlcPeriodIndex = await repository.GetNextPlcPeriodIndexAsync(previous.Machine, previous.OrderId, cancellationToken)
+            };
+            if (boundary is not null)
+            {
+                next.BaselineRawId = boundary.Id;
+                next.BaselineCapturedAt = boundary.ReadAt;
+                next.BaselineShotOkTotal = boundary.ShotOkTotal;
+                next.BaselineShotNgTotal = boundary.ShotNgTotal;
+                next.BaselineRunTimeTotalSec = boundary.RunTimeTotalSec;
+                next.BaselineStopTimeTotalSec = boundary.StopTimeTotalSec;
+                next.BaselineErrorTimeTotalSec = boundary.ErrorTimeTotalSec;
+                next.BaselineCycleTimeMs = boundary.CycleTimeMs;
+            }
+            await repository.SaveProductionContextAsync(next, cancellationToken);
+            await repository.EnsureProductionPeriodAsync(next, executedAt, cancellationToken);
+            repository.AfterCommit(() => productionContextCache.Upsert(next));
+            transitions.Add(new(previous.OrderId, previous.SessionId, next.SessionId));
+        }
+        return new(transitions, warnings.Count == 0 ? null : string.Join(" ", warnings));
     }
 
     private async Task EnqueueProductionMetricAsync(
@@ -1359,16 +1422,22 @@ public sealed class RealtimeSnapshotSyncService(
     IRawDataCaptureService rawDataCaptureService,
     IOeeLocalProcessingService localProcessingService,
     ISyncOutboxDispatcher outboxDispatcher,
-    IRealtimeSnapshotSyncStatusStore statusStore) : IRealtimeSnapshotSyncService
+    IRealtimeSnapshotSyncStatusStore statusStore,
+    OeeProcessingGate? processingGate = null) : IRealtimeSnapshotSyncService
 {
     public async Task<RealtimeSnapshotBuildResult> SyncAsync(string gatewayId, CancellationToken cancellationToken)
     {
         var current = options.Value;
         var interval = TimeSpan.FromMilliseconds(Math.Max(1000, current.SyncIntervalMs));
-        var rawIntervals = await rawDataCaptureService.CaptureAsync(interval, current.RequireProductionContext, cancellationToken);
-        var createdAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        var processed = await localProcessingService.ProcessAsync(gatewayId, rawIntervals, createdAt, cancellationToken);
-        var build = processed.RealtimeSnapshot;
+        RealtimeSnapshotBuildResult build;
+        long createdAt;
+        using (await (processingGate ?? OeeProcessingGate.Shared).EnterAsync(cancellationToken))
+        {
+            var rawIntervals = await rawDataCaptureService.CaptureAsync(interval, current.RequireProductionContext, cancellationToken);
+            createdAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            var processed = await localProcessingService.ProcessAsync(gatewayId, rawIntervals, createdAt, cancellationToken);
+            build = processed.RealtimeSnapshot;
+        }
         if (build.Payload.Items.Count == 0)
         {
             return build;

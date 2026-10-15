@@ -1,0 +1,77 @@
+@page "{id:guid?}"
+@using Rostek.Gateway.Domain.Entities
+@model Rostek.Gateway.Host.Pages.ProductionSchedules.EditModel
+@{
+    ViewData["Title"] = Model.Input.Id is null ? "Tạo lịch session" : "Sửa lịch session";
+    string[] days = ["Chủ nhật", "Thứ hai", "Thứ ba", "Thứ tư", "Thứ năm", "Thứ sáu", "Thứ bảy"];
+}
+<h1 class="h3">@ViewData["Title"]</h1>
+<p class="text-muted">Giờ Việt Nam (UTC+7). Lịch dùng lệnh và sản phẩm đang chạy tại thời điểm thực hiện.</p>
+<form method="post" class="row g-3" id="schedule-form">
+    <input asp-for="Input.Id" type="hidden" /><input asp-for="Input.Revision" type="hidden" />
+    <div asp-validation-summary="All" class="text-danger" role="alert"></div>
+    <div class="col-md-8"><label asp-for="Input.Name" class="form-label">Tên lịch</label><input asp-for="Input.Name" class="form-control" maxlength="150" required /></div>
+    <div class="col-md-4 d-flex align-items-end"><div class="form-check mb-2"><input asp-for="Input.Enabled" class="form-check-input" /><label asp-for="Input.Enabled" class="form-check-label">Bật lịch</label></div></div>
+    <fieldset class="col-12">
+        <legend class="fs-6">Máy áp dụng</legend>
+        <div class="form-check"><input asp-for="Input.Target" type="radio" value="All" id="target-all" class="form-check-input" /><label for="target-all" class="form-check-label">Tất cả máy đang bật, tự bao gồm máy được thêm sau này</label></div>
+        <div class="form-check"><input asp-for="Input.Target" type="radio" value="Selected" id="target-selected" class="form-check-input" /><label for="target-selected" class="form-check-label">Chọn một hoặc nhiều máy</label></div>
+        <div id="machine-picker" class="border rounded p-3 mt-2">
+            <label for="machine-search" class="form-label">Tìm theo mã hoặc tên máy</label>
+            <input type="search" id="machine-search" class="form-control mb-2" placeholder="Tìm máy…" />
+            <div class="d-flex gap-3 align-items-center mb-2"><button type="button" id="select-visible" class="btn btn-sm btn-outline-secondary">Chọn máy đang hiển thị</button><button type="button" id="clear-machines" class="btn btn-sm btn-outline-secondary">Bỏ chọn hết</button><span id="machine-count" aria-live="polite"></span></div>
+            <div style="max-height:20rem;overflow:auto" class="row g-2">
+                @foreach (var machine in Model.Machines)
+                {
+                    <div class="col-md-4 machine-option" data-search="@($"{machine.Code} {machine.Name}".ToLowerInvariant())">
+                        <div class="form-check"><input type="checkbox" class="form-check-input machine-checkbox" name="Input.MachineIds" value="@machine.Id" id="machine-@machine.Id" checked="@Model.Input.MachineIds.Contains(machine.Id)" /><label class="form-check-label" for="machine-@machine.Id">@machine.Code — @machine.Name @(!machine.Enabled ? "(đang tắt)" : "")</label></div>
+                    </div>
+                }
+                @if (Model.Machines.Count == 0) { <p class="text-muted">Chưa có máy trong cấu hình.</p> }
+            </div>
+        </div>
+    </fieldset>
+    <div class="col-md-4"><label asp-for="Input.Kind" class="form-label">Kiểu lịch</label><select asp-for="Input.Kind" class="form-select"><option value="Once">Một lần</option><option value="Weekly">Lặp theo ngày trong tuần</option></select></div>
+    <div class="col-md-4" id="once-fields"><label asp-for="Input.OnceLocalAt" class="form-label">Ngày và giờ (UTC+7)</label><input asp-for="Input.OnceLocalAt" type="datetime-local" asp-format="{0:yyyy-MM-ddTHH:mm}" class="form-control" /></div>
+    <div class="col-md-4" id="time-fields"><label asp-for="Input.LocalTime" class="form-label">Giờ lặp (UTC+7)</label><input asp-for="Input.LocalTime" type="time" step="60" class="form-control" /></div>
+    <fieldset class="col-12" id="weekday-fields"><legend class="fs-6">Ngày lặp — chọn đủ bảy ngày để chạy hằng ngày</legend>
+        @for (var day = 0; day < 7; day++)
+        {
+            <div class="form-check form-check-inline"><input type="checkbox" class="form-check-input" name="Input.Weekdays" value="@day" id="weekday-@day" checked="@Model.Input.Weekdays.Contains(day)" /><label class="form-check-label" for="weekday-@day">@days[day]</label></div>
+        }
+    </fieldset>
+    <div class="col-12"><p class="text-muted mb-0">Nếu Gateway bị tắt, khi chạy lại sẽ thực hiện lượt bị lỡ gần nhất cho mỗi máy. Máy không có lệnh MES đang chạy sẽ được bỏ qua.</p></div>
+    <div class="col-12"><button class="btn btn-primary" type="submit">Lưu lịch</button> <a class="btn btn-secondary" asp-page="Index">Hủy</a></div>
+</form>
+@section Scripts {
+<script>
+(() => {
+    const form = document.getElementById('schedule-form');
+    const boxes = [...form.querySelectorAll('.machine-checkbox')];
+    const picker = document.getElementById('machine-picker');
+    const count = () => document.getElementById('machine-count').textContent = `Đã chọn ${boxes.filter(box => box.checked).length} máy`;
+    const update = () => {
+        const selected = document.getElementById('target-selected').checked;
+        picker.hidden = !selected;
+        boxes.forEach(box => box.disabled = !selected);
+        const once = document.getElementById('Input_Kind').value === 'Once';
+        document.getElementById('once-fields').hidden = !once;
+        document.getElementById('Input_OnceLocalAt').disabled = !once;
+        document.getElementById('Input_OnceLocalAt').required = once;
+        document.getElementById('time-fields').hidden = once;
+        document.getElementById('weekday-fields').hidden = once;
+        document.getElementById('Input_LocalTime').disabled = once;
+        count();
+    };
+    form.querySelectorAll('input[name="Input.Target"], select[name="Input.Kind"]').forEach(input => input.addEventListener('change', update));
+    boxes.forEach(box => box.addEventListener('change', count));
+    document.getElementById('machine-search').addEventListener('input', event => {
+        const query = event.target.value.toLocaleLowerCase('vi').trim();
+        form.querySelectorAll('.machine-option').forEach(option => option.hidden = !option.dataset.search.includes(query));
+    });
+    document.getElementById('select-visible').addEventListener('click', () => { boxes.filter(box => !box.closest('.machine-option').hidden).forEach(box => box.checked = true); count(); });
+    document.getElementById('clear-machines').addEventListener('click', () => { boxes.forEach(box => box.checked = false); count(); });
+    update();
+})();
+</script>
+}

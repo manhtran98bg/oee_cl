@@ -7,6 +7,8 @@ using Rostek.Gateway.Infrastructure.MesSync;
 using Rostek.Gateway.Infrastructure.Oee;
 using Rostek.Gateway.Infrastructure.Persistence;
 using Rostek.Gateway.Infrastructure.Repositories;
+using Rostek.Gateway.Infrastructure.Scheduling;
+using Rostek.Gateway.Application.Scheduling;
 
 namespace Rostek.Gateway.Infrastructure;
 
@@ -20,6 +22,7 @@ public static class DependencyInjection
         services.AddScoped<OeeDbInitializer>();
         services.AddScoped<IConfigRepository, EfCoreConfigRepository>();
         services.AddScoped<IOeeLocalRepository, EfCoreOeeLocalRepository>();
+        services.AddScoped<IProductionScheduleRepository, EfCoreProductionScheduleRepository>();
         services.AddSingleton<HttpClient>();
         services.AddScoped<IRealtimeSnapshotClient, HttpRealtimeSnapshotClient>();
         services.AddScoped<ISyncOutboxHttpClient, HttpSyncOutboxClient>();

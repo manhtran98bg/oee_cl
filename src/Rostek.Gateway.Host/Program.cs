@@ -6,6 +6,7 @@ using Rostek.Gateway.Application.MachineTemplates;
 using Rostek.Gateway.Application.MesSync;
 using Rostek.Gateway.Application.Oee;
 using Rostek.Gateway.Application.Ports;
+using Rostek.Gateway.Application.Scheduling;
 using Rostek.Gateway.Contracts.Configuration;
 using Rostek.Gateway.Contracts.Runtime;
 using Rostek.Gateway.Host.BackgroundServices;
@@ -60,6 +61,19 @@ builder.Services.AddSingleton<IProductionContextCache, ProductionContextCache>()
 builder.Services.AddSingleton<IOrderQuantityCache, OrderQuantityCache>();
 builder.Services.AddSingleton<IRealtimeSnapshotSyncStatusStore, RealtimeSnapshotSyncStatusStore>();
 builder.Services.AddScoped<IProductionCommandService, ProductionCommandService>();
+builder.Services.AddSingleton(OeeProcessingGate.Shared);
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddScoped<IProductionScheduleService, ProductionScheduleService>();
+builder.Services.AddScoped<IProductionScheduleRunner>(services => new ProductionScheduleRunner(
+    services.GetRequiredService<IProductionScheduleRepository>(),
+    services.GetRequiredService<IConfigRepository>(),
+    services.GetRequiredService<IOeeLocalRepository>(),
+    services.GetRequiredService<IProductionCommandService>(),
+    services.GetRequiredService<OeeProcessingGate>(),
+    services.GetRequiredService<TimeProvider>(),
+    services.GetRequiredService<ILogger<ProductionScheduleRunner>>(),
+    services.GetRequiredService<Microsoft.Extensions.Options.IOptions<GatewayOptions>>().Value.GatewayId));
+builder.Services.AddHostedService<ProductionScheduleHostedService>();
 builder.Services.AddScoped<IMesEquipmentCatalogService, MesEquipmentCatalogService>();
 builder.Services.AddHostedService<MesSyncHostedService>();
 

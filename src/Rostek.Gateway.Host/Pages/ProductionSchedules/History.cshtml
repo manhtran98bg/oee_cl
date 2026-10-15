@@ -1,0 +1,29 @@
+@page
+@using System.Text.Json
+@using Rostek.Gateway.Application.Scheduling
+@model Rostek.Gateway.Host.Pages.ProductionSchedules.HistoryModel
+@{ ViewData["Title"] = "Lịch sử lập lịch session"; }
+<div class="d-flex justify-content-between align-items-center mb-3"><h1 class="h3">Lịch sử lập lịch session</h1><a class="btn btn-outline-secondary" asp-page="Index">Về danh sách lịch</a></div>
+<p class="text-muted">100 lượt gần nhất. Giờ Việt Nam (UTC+7). Mở từng lượt để xem kết quả trên mỗi máy.</p>
+@if (Model.History.Count == 0) { <div class="alert alert-light border">Chưa có lượt thực hiện nào.</div> }
+@foreach (var item in Model.History)
+{
+    <details class="border rounded p-3 mb-3">
+        <summary><strong>@item.Run.ScheduleName</strong> · @ProductionScheduleClock.Format(item.Run.ScheduledAt) · @ProductionScheduleStatus.Label(item.Run.Status)</summary>
+        <p class="mt-2 mb-1">@item.Run.Message</p>
+        <p class="text-muted">Bắt đầu xử lý: @ProductionScheduleClock.Format(item.Run.CreatedAt) · Hoàn tất: @ProductionScheduleClock.Format(item.Run.CompletedAt)</p>
+        <div class="table-responsive"><table class="table table-sm align-middle">
+            <thead><tr><th>Máy</th><th>Kết quả</th><th>Giờ thực hiện</th><th>Session</th><th>Chi tiết</th></tr></thead>
+            <tbody>
+            @foreach (var machine in item.Machines)
+            {
+                var transitions = JsonSerializer.Deserialize<List<SessionTransition>>(machine.TransitionsJson) ?? [];
+                <tr><td>@machine.MachineCode</td><td>@ProductionScheduleStatus.Label(machine.Status)</td><td>@ProductionScheduleClock.Format(machine.ExecutedAt)</td>
+                    <td>@foreach (var transition in transitions) { <div class="mb-2"><strong>@transition.OrderId</strong><br /><small style="overflow-wrap:anywhere">@transition.PreviousSessionId → @transition.NewSessionId</small></div> }</td>
+                    <td>@machine.Message</td>
+                </tr>
+            }
+            </tbody>
+        </table></div>
+    </details>
+}

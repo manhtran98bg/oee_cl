@@ -85,6 +85,16 @@ http://localhost:8080
 
 Dừng app bằng `Ctrl+C` trong terminal đang chạy app.
 
+## Lập lịch tạo session sản xuất
+
+Mở **Lịch session** trên thanh điều hướng để tạo lịch một lần hoặc lịch lặp theo ngày trong tuần. Mỗi lịch áp dụng cho một/nhiều máy được chọn, hoặc **Tất cả máy đang bật**. Chế độ tất cả tự bao gồm máy được thêm sau này. Thời gian nhập và hiển thị là giờ Việt Nam (UTC+7).
+
+Đến giờ, Gateway chốt session hiện tại của từng lệnh MES đang chạy rồi mở session mới, giữ nguyên lệnh, sản phẩm và metadata. Lệnh chạy thử `TEST_ORDER` không được chuyển; máy không có lệnh MES được ghi nhận bỏ qua. Session do lịch tạo có ID `SCH-<GUID>`; API `start`, `pause`, `stop` giữ nguyên contract.
+
+Gateway kiểm tra lịch mỗi giây kể cả khi đồng bộ MES bị tắt. Sau thời gian ngừng hoạt động, Gateway chạy bù lượt gần nhất cho mỗi máy, bắt đầu session tại thời điểm thực hiện thực tế. Các lịch chồng lấn được gộp trên từng máy. Kết quả, retry và danh sách máy của mỗi lượt được lưu trong `oee.db`; restart không tạo lại session cho máy đã thành công. Máy lỗi được thử tối đa ba lần, cách nhau năm giây; các máy còn lại tiếp tục thực hiện.
+
+Trang **Lịch sử** hiển thị 100 lượt gần nhất và chi tiết từng máy. Sửa/tắt/xóa lịch hủy các máy còn chờ trong lượt cũ; bật lại tính lần tiếp theo từ hiện tại. Lịch một lần đã qua giờ cần sửa sang thời điểm tương lai trước khi bật lại. Xóa lịch giữ lại lịch sử. Chỉ chạy một tiến trình Gateway trên mỗi bộ database.
+
 ## Build và test
 
 ```powershell

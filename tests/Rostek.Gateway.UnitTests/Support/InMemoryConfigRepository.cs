@@ -25,6 +25,7 @@ public sealed class InMemoryConfigRepository(params string[] machineCodes) : ICo
     public Task AddTemplateSignalAsync(TemplateSignal signal, CancellationToken cancellationToken) => throw new NotSupportedException();
     public void RemoveTemplateSignal(TemplateSignal signal) => throw new NotSupportedException();
     public Task<List<Machine>> ListMachinesAsync(MachineQuery query, CancellationToken cancellationToken) => throw new NotSupportedException();
+    public Task<List<Machine>> ListScheduleMachinesAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
     public Task<Machine?> GetMachineAsync(Guid id, bool includeDetails, CancellationToken cancellationToken) => throw new NotSupportedException();
     public Task AddMachineAsync(Machine machine, CancellationToken cancellationToken) => throw new NotSupportedException();
     public void RemoveMachine(Machine machine) => throw new NotSupportedException();

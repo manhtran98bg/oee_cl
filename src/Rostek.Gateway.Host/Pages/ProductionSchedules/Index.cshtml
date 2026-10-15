@@ -1,0 +1,57 @@
+@page
+@using Rostek.Gateway.Application.Scheduling
+@using Rostek.Gateway.Domain.Entities
+@model Rostek.Gateway.Host.Pages.ProductionSchedules.IndexModel
+@{
+    ViewData["Title"] = "Lịch session";
+    string[] days = ["CN", "T2", "T3", "T4", "T5", "T6", "T7"];
+}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h3">Lịch session</h1>
+    <div><a class="btn btn-outline-secondary" asp-page="History">Lịch sử</a> <a class="btn btn-primary" asp-page="Edit">Tạo lịch</a></div>
+</div>
+<p class="text-muted">Giờ Việt Nam (UTC+7). Đến giờ, mỗi lệnh MES đang chạy trên các máy thuộc lịch được chốt và mở session mới. Máy không có lệnh được bỏ qua.</p>
+@if (Model.ErrorMessage is not null) { <div class="alert alert-danger" role="alert">@Model.ErrorMessage</div> }
+@if (Model.Schedules.Count == 0)
+{
+    <div class="alert alert-light border">Chưa có lịch nào. Chọn “Tạo lịch” để bắt đầu.</div>
+}
+else
+{
+<div class="table-responsive">
+<table class="table table-striped align-middle">
+    <thead><tr><th>Tên lịch</th><th>Máy áp dụng</th><th>Thời gian (UTC+7)</th><th>Lần tiếp theo</th><th>Trạng thái / kết quả gần nhất</th><th>Thao tác</th></tr></thead>
+    <tbody>
+    @foreach (var item in Model.Schedules)
+    {
+        var schedule = item.Schedule;
+        <tr>
+            <td><a asp-page="Edit" asp-route-id="@schedule.Id">@schedule.Name</a></td>
+            <td style="max-width:24rem">@item.MachineSummary</td>
+            <td>
+                @if (schedule.Kind == ProductionScheduleKind.Once) { <span>Một lần: @ProductionScheduleClock.Format(schedule.OnceAt)</span> }
+                else { <span>@TimeOnly.FromTimeSpan(TimeSpan.FromMinutes(schedule.LocalTimeMinutes)).ToString("HH:mm") · @string.Join(", ", Enumerable.Range(0, 7).Where(day => (schedule.WeekdaysMask & (1 << day)) != 0).Select(day => days[day]))</span> }
+            </td>
+            <td>@ProductionScheduleClock.Format(schedule.NextRunAt)</td>
+            <td>
+                <div>@(!schedule.Enabled ? "Đã tắt" : schedule.NextRunAt is null ? "Đã kết thúc" : "Đang bật")</div>
+                @if (item.LastRun is not null) { <a asp-page="History" asp-route-scheduleId="@schedule.Id">@ProductionScheduleStatus.Label(item.LastRun.Status)</a> }
+            </td>
+            <td>
+                <div class="d-flex gap-2 flex-wrap">
+                    <a class="btn btn-sm btn-outline-primary" asp-page="Edit" asp-route-id="@schedule.Id">Sửa</a>
+                    <form method="post" asp-page-handler="Toggle">
+                        <input type="hidden" name="id" value="@schedule.Id" /><input type="hidden" name="enabled" value="@(!schedule.Enabled)" />
+                        <button class="btn btn-sm btn-outline-secondary">@(schedule.Enabled ? "Tắt" : "Bật")</button>
+                    </form>
+                    <form method="post" asp-page-handler="Delete" onsubmit="return confirm('Xóa lịch này? Lịch sử thực hiện vẫn được giữ lại.');">
+                        <input type="hidden" name="id" value="@schedule.Id" /><button class="btn btn-sm btn-outline-danger">Xóa</button>
+                    </form>
+                </div>
+            </td>
+        </tr>
+    }
+    </tbody>
+</table>
+</div>
+}

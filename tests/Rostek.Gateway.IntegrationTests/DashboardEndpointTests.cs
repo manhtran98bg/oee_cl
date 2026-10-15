@@ -1,11 +1,13 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Rostek.Gateway.Application.Common;
 using Rostek.Gateway.Application.MesSync;
+using Rostek.Gateway.Application.Scheduling;
 using Rostek.Gateway.Domain.Entities;
 using Rostek.Gateway.Domain.Enums;
 using Rostek.Gateway.Infrastructure.Persistence;
@@ -125,6 +127,66 @@ public sealed class DashboardEndpointTests
             Assert.Contains("\"items\"", json);
             Assert.Contains("\"code\":\"1-1\"", json);
             Assert.Contains("\"can_import\":true", json);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("ROSTEK_GATEWAY_HOME", previousGatewayHome);
+        }
+    }
+
+    [Fact]
+    public async Task Schedule_pages_save_multiple_machines_validate_empty_weekdays_and_require_antiforgery()
+    {
+        var previousGatewayHome = Environment.GetEnvironmentVariable("ROSTEK_GATEWAY_HOME");
+        Environment.SetEnvironmentVariable("ROSTEK_GATEWAY_HOME", CreateTempGatewayHome());
+        try
+        {
+            await using var factory = new WebApplicationFactory<Program>();
+            using var client = factory.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+            await SeedMachineAsync(factory, "M16-01");
+            List<Guid> ids;
+            using (var scope = factory.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<GatewayDbContext>();
+                db.Machines.Add(new Machine { Code = "M16-02", Name = "Machine 2", TemplateId = (await db.MachineTemplates.SingleAsync()).Id });
+                await db.SaveChangesAsync();
+                ids = await db.Machines.Select(machine => machine.Id).ToListAsync();
+            }
+            var html = await client.GetStringAsync("/ProductionSchedules/Edit");
+            Assert.Contains("machine-picker", html);
+            Assert.All(ids, id => Assert.Contains(id.ToString(), html));
+            var token = WebUtility.HtmlDecode(Regex.Match(html, "name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"").Groups[1].Value);
+            Assert.NotEmpty(token);
+            var fields = new List<KeyValuePair<string, string>>
+            {
+                new("__RequestVerificationToken", token), new("Input.Name", "Scheduled batch"),
+                new("Input.Target", "Selected"), new("Input.Kind", "Once"), new("Input.Enabled", "true"),
+                new("Input.OnceLocalAt", ProductionScheduleClock.ToLocal(DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 3600).ToString("yyyy-MM-ddTHH:mm"))
+            };
+            fields.AddRange(ids.Select(id => new KeyValuePair<string, string>("Input.MachineIds", id.ToString())));
+            var response = await client.PostAsync("/ProductionSchedules/Edit", new FormUrlEncodedContent(fields));
+            Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
+            Assert.Contains("Scheduled batch", await client.GetStringAsync("/ProductionSchedules"));
+            Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/ProductionSchedules/History")).StatusCode);
+            using (var scope = factory.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<OeeDbContext>();
+                var saved = await db.ProductionSchedules.SingleAsync();
+                Assert.Equal(ProductionScheduleTarget.Selected, saved.Target);
+                Assert.All(ids, id => Assert.Contains(id.ToString(), saved.MachineIdsJson));
+            }
+
+            var invalid = await client.PostAsync("/ProductionSchedules/Edit", new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["__RequestVerificationToken"] = token, ["Input.Name"] = "No days", ["Input.Target"] = "All",
+                ["Input.Kind"] = "Weekly", ["Input.LocalTime"] = "08:00", ["Input.Enabled"] = "true"
+            }));
+            Assert.Equal(HttpStatusCode.OK, invalid.StatusCode);
+            Assert.Contains("Chọn ít nhất một ngày", WebUtility.HtmlDecode(await invalid.Content.ReadAsStringAsync()));
+            var missingToken = await client.PostAsync("/ProductionSchedules/Edit", new FormUrlEncodedContent(new Dictionary<string, string> { ["Input.Name"] = "Unauthorized form" }));
+            Assert.Equal(HttpStatusCode.BadRequest, missingToken.StatusCode);
+            using (var scope = factory.Services.CreateScope())
+                Assert.Equal(1, await scope.ServiceProvider.GetRequiredService<OeeDbContext>().ProductionSchedules.CountAsync());
         }
         finally
         {
