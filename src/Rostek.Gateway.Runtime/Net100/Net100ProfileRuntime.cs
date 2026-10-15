@@ -30,7 +30,11 @@ public sealed class Net100ProfileRuntime : IAsyncDisposable
     private readonly ILogger<Net100ProfileRuntime> _logger;
     private readonly SemaphoreSlim _requestLimiter;
     private readonly ConcurrentDictionary<string, MachineRuntimeStatusDto> _statuses = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<long, Task> _pollTasks = [];
     private Dictionary<string, EffectiveMachineConfiguration> _machines;
+    private Dictionary<string, ScheduledMachine> _schedules = new(StringComparer.OrdinalIgnoreCase);
+    private long _generation;
+    private long _nextTaskId;
     private CancellationTokenSource? _runtimeCts;
     private Task? _runtimeTask;
 
@@ -93,14 +97,20 @@ public sealed class Net100ProfileRuntime : IAsyncDisposable
                 UpdateStatus(machineCode, MachineRuntimeState.Starting, "NET100 shared profile starting", incrementStart: true);
             }
 
+            RebuildSchedules(DateTimeOffset.UtcNow);
+
             _runtimeTask = Task.Run(() => RunAsync(_runtimeCts.Token), CancellationToken.None);
         }
 
+        var currentMachines = GetMachineSnapshot();
         _logger.LogInformation(
-            "Started NET100 shared profile {ProfileId}. Endpoint={Endpoint}, MachineCount={MachineCount}",
+            "Started NET100 shared profile scheduler {ProfileId}. Endpoint={Endpoint}, MachineCount={MachineCount}, MaxConcurrentRequests={MaxConcurrentRequests}, MinPollingIntervalMs={MinPollingIntervalMs}, MaxPollingIntervalMs={MaxPollingIntervalMs}",
             ProfileId,
             ServerEndpoint,
-            GetMachineSnapshot().Count);
+            currentMachines.Count,
+            Math.Max(1, _options.Value.MaxNet100ConcurrentRequests),
+            currentMachines.Count == 0 ? 0 : (int)currentMachines.Min(GetPollingInterval).TotalMilliseconds,
+            currentMachines.Count == 0 ? 0 : (int)currentMachines.Max(GetPollingInterval).TotalMilliseconds);
         return Task.CompletedTask;
     }
 
@@ -115,6 +125,7 @@ public sealed class Net100ProfileRuntime : IAsyncDisposable
             removed = _machines.Keys.Except(next.Keys, StringComparer.OrdinalIgnoreCase).ToList();
             added = next.Keys.Except(_machines.Keys, StringComparer.OrdinalIgnoreCase).ToList();
             _machines = next;
+            RebuildSchedules(DateTimeOffset.UtcNow);
         }
 
         foreach (var machineCode in removed)
@@ -184,33 +195,65 @@ public sealed class Net100ProfileRuntime : IAsyncDisposable
     {
         while (!cancellationToken.IsCancellationRequested)
         {
-            var machines = GetMachineSnapshot();
             try
             {
-                await Task.WhenAll(machines.Select(machine => PollWithLimitAsync(machine, cancellationToken)));
-                await Task.Delay(GetPollingInterval(machines), cancellationToken);
+                var due = TakeDueMachines(DateTimeOffset.UtcNow);
+                foreach (var scheduled in due)
+                {
+                    var taskId = Interlocked.Increment(ref _nextTaskId);
+                    var task = PollScheduledMachineAsync(scheduled, cancellationToken);
+                    _pollTasks[taskId] = task;
+                    _ = task.ContinueWith(
+                        completedTask => _pollTasks.TryRemove(taskId, out _),
+                        CancellationToken.None,
+                        TaskContinuationOptions.ExecuteSynchronously,
+                        TaskScheduler.Default);
+                }
+
+                await Task.Delay(GetSchedulerDelay(DateTimeOffset.UtcNow), cancellationToken);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 break;
             }
         }
+
+        var activePolls = _pollTasks.Values.ToArray();
+        if (activePolls.Length > 0)
+        {
+            try
+            {
+                await Task.WhenAll(activePolls);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+            }
+        }
     }
 
-    private async Task PollWithLimitAsync(EffectiveMachineConfiguration machine, CancellationToken cancellationToken)
+    private async Task PollScheduledMachineAsync(ScheduledPoll scheduled, CancellationToken cancellationToken)
     {
-        await _requestLimiter.WaitAsync(cancellationToken);
         try
         {
-            await PollMachineAsync(machine, cancellationToken);
+            await PollMachineAsync(scheduled.Machine, scheduled.Generation, cancellationToken);
         }
         finally
         {
-            _requestLimiter.Release();
+            lock (_sync)
+            {
+                if (_schedules.TryGetValue(scheduled.Machine.MachineCode, out var current) &&
+                    current.Generation == scheduled.Generation)
+                {
+                    current.InFlight = false;
+                }
+            }
         }
     }
 
-    private async Task PollMachineAsync(EffectiveMachineConfiguration machine, CancellationToken cancellationToken)
+    private async Task PollMachineAsync(
+        EffectiveMachineConfiguration machine,
+        long generation,
+        CancellationToken cancellationToken)
     {
         var address = machine.Connection.Host;
         if (string.IsNullOrWhiteSpace(address))
@@ -228,9 +271,19 @@ public sealed class Net100ProfileRuntime : IAsyncDisposable
             try
             {
                 UpdateStatus(machine.MachineCode, MachineRuntimeState.Connecting, "Reading NET100 live data");
-                var xml = await _adapter.ReadLiveAsync(address, machine.Connection.RequestTimeoutMs, cancellationToken);
+                string xml;
+                await _requestLimiter.WaitAsync(cancellationToken);
+                try
+                {
+                    xml = await _adapter.ReadLiveAsync(address, machine.Connection.RequestTimeoutMs, cancellationToken);
+                }
+                finally
+                {
+                    _requestLimiter.Release();
+                }
+
                 var live = _liveParser.Parse(xml);
-                if (!IsCurrentMachine(machine.MachineCode))
+                if (!IsCurrentMachine(machine.MachineCode, generation))
                 {
                     return;
                 }
@@ -254,8 +307,17 @@ public sealed class Net100ProfileRuntime : IAsyncDisposable
                         address,
                         attempt + 1,
                         attempts);
+                    var retryDelayMs = Math.Min(
+                        _options.Value.MaxReconnectBackoffMs,
+                        500 * (1 << Math.Min(10, attempt - 1)));
+                    await Task.Delay(Math.Max(100, retryDelayMs), cancellationToken);
                 }
             }
+        }
+
+        if (!IsCurrentMachine(machine.MachineCode, generation))
+        {
+            return;
         }
 
         var message = lastError?.Message ?? "NET100 live request failed.";
@@ -356,21 +418,98 @@ public sealed class Net100ProfileRuntime : IAsyncDisposable
         }
     }
 
-    private bool IsCurrentMachine(string machineCode)
+    private bool IsCurrentMachine(string machineCode, long generation)
     {
         lock (_sync)
         {
-            return _machines.ContainsKey(machineCode);
+            return _machines.ContainsKey(machineCode) &&
+                _schedules.TryGetValue(machineCode, out var scheduled) &&
+                scheduled.Generation == generation;
         }
     }
 
-    private TimeSpan GetPollingInterval(IReadOnlyList<EffectiveMachineConfiguration> machines)
+    private void RebuildSchedules(DateTimeOffset now)
     {
-        var configured = machines.Count == 0
-            ? _options.Value.MinimumPollingIntervalMs
-            : machines.Min(machine => machine.Connection.PollingIntervalMs ?? _options.Value.MinimumPollingIntervalMs);
+        _generation++;
+        var generation = _generation;
+        var ordered = _machines.Values
+            .OrderBy(machine => machine.MachineCode, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var schedules = new Dictionary<string, ScheduledMachine>(StringComparer.OrdinalIgnoreCase);
+        for (var index = 0; index < ordered.Length; index++)
+        {
+            var machine = ordered[index];
+            var interval = GetPollingInterval(machine);
+            var offsetTicks = ordered.Length <= 1 ? 0 : interval.Ticks * index / ordered.Length;
+            schedules[machine.MachineCode] = new ScheduledMachine(
+                machine,
+                generation,
+                now + TimeSpan.FromTicks(offsetTicks));
+        }
+
+        _schedules = schedules;
+    }
+
+    private IReadOnlyList<ScheduledPoll> TakeDueMachines(DateTimeOffset now)
+    {
+        lock (_sync)
+        {
+            var due = new List<ScheduledPoll>();
+            foreach (var scheduled in _schedules.Values.OrderBy(item => item.NextDueUtc))
+            {
+                if (scheduled.InFlight || scheduled.NextDueUtc > now)
+                {
+                    continue;
+                }
+
+                scheduled.InFlight = true;
+                var interval = GetPollingInterval(scheduled.Machine);
+                do
+                {
+                    scheduled.NextDueUtc += interval;
+                }
+                while (scheduled.NextDueUtc <= now);
+                due.Add(new ScheduledPoll(scheduled.Machine, scheduled.Generation));
+            }
+
+            return due;
+        }
+    }
+
+    private TimeSpan GetSchedulerDelay(DateTimeOffset now)
+    {
+        lock (_sync)
+        {
+            var next = _schedules.Values
+                .Where(item => !item.InFlight)
+                .Select(item => item.NextDueUtc)
+                .DefaultIfEmpty(now.AddMilliseconds(250))
+                .Min();
+            var delay = next - now;
+            return delay <= TimeSpan.Zero
+                ? TimeSpan.FromMilliseconds(10)
+                : TimeSpan.FromMilliseconds(Math.Min(250, delay.TotalMilliseconds));
+        }
+    }
+
+    private TimeSpan GetPollingInterval(EffectiveMachineConfiguration machine)
+    {
+        var configured = machine.Connection.PollingIntervalMs ?? _options.Value.MinimumPollingIntervalMs;
         return TimeSpan.FromMilliseconds(Math.Max(_options.Value.MinimumPollingIntervalMs, configured));
     }
+
+    private sealed class ScheduledMachine(
+        EffectiveMachineConfiguration machine,
+        long generation,
+        DateTimeOffset nextDueUtc)
+    {
+        public EffectiveMachineConfiguration Machine { get; } = machine;
+        public long Generation { get; } = generation;
+        public DateTimeOffset NextDueUtc { get; set; } = nextDueUtc;
+        public bool InFlight { get; set; }
+    }
+
+    private sealed record ScheduledPoll(EffectiveMachineConfiguration Machine, long Generation);
 
     private void UpdateStatus(
         string machineCode,

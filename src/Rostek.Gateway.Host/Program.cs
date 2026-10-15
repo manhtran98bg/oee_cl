@@ -60,8 +60,10 @@ builder.Services.AddScoped<ISyncOutboxDispatcher, MesSyncOutboxDispatcher>();
 builder.Services.AddSingleton<IProductionContextCache, ProductionContextCache>();
 builder.Services.AddSingleton<IOrderQuantityCache, OrderQuantityCache>();
 builder.Services.AddSingleton<IRealtimeSnapshotSyncStatusStore, RealtimeSnapshotSyncStatusStore>();
+builder.Services.AddSingleton<ProductionMetricBuildSchedule>();
 builder.Services.AddScoped<IProductionCommandService, ProductionCommandService>();
 builder.Services.AddSingleton(OeeProcessingGate.Shared);
+builder.Services.AddSingleton<ProductionScheduleGate>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<IProductionScheduleService, ProductionScheduleService>();
 builder.Services.AddScoped<IProductionScheduleRunner>(services => new ProductionScheduleRunner(
@@ -70,12 +72,14 @@ builder.Services.AddScoped<IProductionScheduleRunner>(services => new Production
     services.GetRequiredService<IOeeLocalRepository>(),
     services.GetRequiredService<IProductionCommandService>(),
     services.GetRequiredService<OeeProcessingGate>(),
+    services.GetRequiredService<ProductionScheduleGate>(),
     services.GetRequiredService<TimeProvider>(),
     services.GetRequiredService<ILogger<ProductionScheduleRunner>>(),
     services.GetRequiredService<Microsoft.Extensions.Options.IOptions<GatewayOptions>>().Value.GatewayId));
 builder.Services.AddHostedService<ProductionScheduleHostedService>();
 builder.Services.AddScoped<IMesEquipmentCatalogService, MesEquipmentCatalogService>();
 builder.Services.AddHostedService<MesSyncHostedService>();
+builder.Services.AddHostedService<MesSyncOutboxHostedService>();
 
 var gatewayOptions = builder.Configuration.GetSection("Gateway").Get<GatewayOptions>() ?? new GatewayOptions();
 gatewayOptions.DataDirectory = ResolveGatewayPath(externalAppSettings.GatewayHomePath, gatewayOptions.DataDirectory, "data");
@@ -87,7 +91,9 @@ Directory.CreateDirectory(gatewayOptions.ExportDirectory);
 
 var configDatabasePath = Path.Combine(gatewayOptions.DataDirectory, SanitizeDatabaseFileName(gatewayOptions.ConfigDatabaseFileName, "config.db"));
 var oeeDatabasePath = Path.Combine(gatewayOptions.DataDirectory, SanitizeDatabaseFileName(gatewayOptions.OeeDatabaseFileName, "oee.db"));
-builder.Services.AddGatewayInfrastructure($"Data Source={configDatabasePath}", $"Data Source={oeeDatabasePath}");
+builder.Services.AddGatewayInfrastructure(
+    $"Data Source={configDatabasePath};Default Timeout=5;Foreign Keys=True;Pooling=True",
+    $"Data Source={oeeDatabasePath};Default Timeout=5;Foreign Keys=True;Pooling=True");
 builder.Services.AddGatewayRuntime();
 
 var app = builder.Build();

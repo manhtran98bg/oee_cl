@@ -198,9 +198,36 @@ public sealed class EfCoreOeeLocalRepository(OeeDbContext dbContext) : IOeeLocal
     public Task<PlcRawInterval?> GetLatestRawIntervalAsync(string machine, CancellationToken cancellationToken) =>
         dbContext.PlcRawIntervals
             .AsNoTracking()
-            .Where(item => item.Machine.ToUpper() == machine.ToUpper())
+            .Where(item => item.Machine == machine)
             .OrderByDescending(item => item.ReadAt)
             .FirstOrDefaultAsync(cancellationToken);
+
+    public async Task<IReadOnlyDictionary<string, PlcRawInterval>> GetLatestRawIntervalsAsync(
+        IReadOnlyCollection<string> machines,
+        CancellationToken cancellationToken)
+    {
+        var machineCodes = machines.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        if (machineCodes.Length == 0)
+        {
+            return new Dictionary<string, PlcRawInterval>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        var latestReadTimes = dbContext.PlcRawIntervals
+            .Where(item => machineCodes.Contains(item.Machine))
+            .GroupBy(item => item.Machine)
+            .Select(group => new { Machine = group.Key, ReadAt = group.Max(item => item.ReadAt) });
+        var rows = await dbContext.PlcRawIntervals
+            .AsNoTracking()
+            .Join(
+                latestReadTimes,
+                raw => new { raw.Machine, raw.ReadAt },
+                latest => new { latest.Machine, latest.ReadAt },
+                (raw, _) => raw)
+            .ToListAsync(cancellationToken);
+        return rows
+            .GroupBy(item => item.Machine, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+    }
 
     public async Task<IReadOnlyList<PlcRawInterval>> ListRawIntervalsAsync(
         string machine,
@@ -210,7 +237,7 @@ public sealed class EfCoreOeeLocalRepository(OeeDbContext dbContext) : IOeeLocal
         await dbContext.PlcRawIntervals
             .AsNoTracking()
             .Where(item =>
-                item.Machine.ToUpper() == machine.ToUpper() &&
+                item.Machine == machine &&
                 item.ReadAt >= startAt &&
                 item.ReadAt <= endAt)
             .OrderBy(item => item.ReadAt)
@@ -230,23 +257,29 @@ public sealed class EfCoreOeeLocalRepository(OeeDbContext dbContext) : IOeeLocal
 
     public async Task<IReadOnlyList<PlcRawInterval>> InsertMissingRawIntervalsAsync(IReadOnlyCollection<PlcRawInterval> rawIntervals, CancellationToken cancellationToken)
     {
-        var inserted = new List<PlcRawInterval>();
-        foreach (var raw in rawIntervals)
+        if (rawIntervals.Count == 0)
         {
-            var exists = await dbContext.PlcRawIntervals.AnyAsync(
-                item => item.Machine.ToUpper() == raw.Machine.ToUpper() && item.ReadAt == raw.ReadAt,
-                cancellationToken);
-            if (exists)
-            {
-                continue;
-            }
-
-            await dbContext.PlcRawIntervals.AddAsync(raw, cancellationToken);
-            inserted.Add(raw);
+            return [];
         }
+
+        var candidates = rawIntervals
+            .GroupBy(raw => (raw.Machine, raw.ReadAt))
+            .Select(group => group.First())
+            .ToArray();
+        var machines = candidates.Select(raw => raw.Machine).Distinct().ToArray();
+        var minReadAt = candidates.Min(raw => raw.ReadAt);
+        var maxReadAt = candidates.Max(raw => raw.ReadAt);
+        var existing = await dbContext.PlcRawIntervals
+            .AsNoTracking()
+            .Where(raw => machines.Contains(raw.Machine) && raw.ReadAt >= minReadAt && raw.ReadAt <= maxReadAt)
+            .Select(raw => new { raw.Machine, raw.ReadAt })
+            .ToListAsync(cancellationToken);
+        var existingKeys = existing.Select(raw => (raw.Machine, raw.ReadAt)).ToHashSet();
+        var inserted = candidates.Where(raw => !existingKeys.Contains((raw.Machine, raw.ReadAt))).ToList();
 
         if (inserted.Count > 0)
         {
+            await dbContext.PlcRawIntervals.AddRangeAsync(inserted, cancellationToken);
             await dbContext.SaveChangesAsync(cancellationToken);
         }
 
@@ -255,14 +288,25 @@ public sealed class EfCoreOeeLocalRepository(OeeDbContext dbContext) : IOeeLocal
 
     public async Task UpsertProductionMetricsAsync(IReadOnlyCollection<ProductionMetric> metrics, CancellationToken cancellationToken)
     {
+        if (metrics.Count == 0)
+        {
+            return;
+        }
+
+        var metricIds = metrics.Select(metric => metric.MetricId).Distinct().ToArray();
+        var existingMetrics = await dbContext.ProductionMetrics
+            .Where(item => metricIds.Contains(item.MetricId))
+            .ToDictionaryAsync(item => item.MetricId, cancellationToken);
         foreach (var metric in metrics)
         {
-            var existing = await dbContext.ProductionMetrics.FirstOrDefaultAsync(
-                item => item.MetricId == metric.MetricId,
-                cancellationToken);
-            if (existing is null)
+            if (!existingMetrics.TryGetValue(metric.MetricId, out var existing))
             {
                 await dbContext.ProductionMetrics.AddAsync(metric, cancellationToken);
+                continue;
+            }
+
+            if (existing.IsFinal && !metric.IsFinal)
+            {
                 continue;
             }
 
@@ -325,6 +369,26 @@ public sealed class EfCoreOeeLocalRepository(OeeDbContext dbContext) : IOeeLocal
             .OrderByDescending(item => item.StartAt)
             .FirstOrDefaultAsync(cancellationToken);
 
+    public async Task<IReadOnlyDictionary<string, MachineStateEvent>> GetOpenMachineStateEventsAsync(
+        IReadOnlyCollection<string> sessionIds,
+        CancellationToken cancellationToken)
+    {
+        var ids = sessionIds.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        if (ids.Length == 0)
+        {
+            return new Dictionary<string, MachineStateEvent>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        var events = await dbContext.MachineStateEvents
+            .AsNoTracking()
+            .Where(item => item.IsOpen && ids.Contains(item.SessionId))
+            .OrderByDescending(item => item.StartAt)
+            .ToListAsync(cancellationToken);
+        return events
+            .GroupBy(item => item.SessionId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+    }
+
     public async Task SaveMachineStateEventsAsync(IReadOnlyCollection<MachineStateEvent> stateEvents, CancellationToken cancellationToken)
     {
         var distinctEvents = stateEvents
@@ -367,15 +431,34 @@ public sealed class EfCoreOeeLocalRepository(OeeDbContext dbContext) : IOeeLocal
 
     public async Task UpsertSyncOutboxMessageAsync(SyncOutboxMessage message, CancellationToken cancellationToken)
     {
-        var existing = await dbContext.SyncOutboxMessages.FirstOrDefaultAsync(
-            item => item.DedupeKey == message.DedupeKey,
-            cancellationToken);
-        if (existing is null)
+        await UpsertSyncOutboxMessagesAsync([message], cancellationToken);
+    }
+
+    public async Task UpsertSyncOutboxMessagesAsync(
+        IReadOnlyCollection<SyncOutboxMessage> messages,
+        CancellationToken cancellationToken)
+    {
+        if (messages.Count == 0)
         {
-            await dbContext.SyncOutboxMessages.AddAsync(message, cancellationToken);
+            return;
         }
-        else
+
+        var distinctMessages = messages
+            .GroupBy(message => message.DedupeKey, StringComparer.Ordinal)
+            .Select(group => group.Last())
+            .ToArray();
+        var dedupeKeys = distinctMessages.Select(message => message.DedupeKey).ToArray();
+        var existingMessages = await dbContext.SyncOutboxMessages
+            .Where(item => dedupeKeys.Contains(item.DedupeKey))
+            .ToDictionaryAsync(item => item.DedupeKey, cancellationToken);
+        foreach (var message in distinctMessages)
         {
+            if (!existingMessages.TryGetValue(message.DedupeKey, out var existing))
+            {
+                await dbContext.SyncOutboxMessages.AddAsync(message, cancellationToken);
+                continue;
+            }
+
             existing.Topic = message.Topic;
             existing.EndpointPath = message.EndpointPath;
             existing.PayloadJson = message.PayloadJson;
@@ -438,12 +521,17 @@ public sealed class EfCoreOeeLocalRepository(OeeDbContext dbContext) : IOeeLocal
             .ToListAsync(cancellationToken);
     }
 
-    public async Task MarkSyncOutboxMessagesSucceededAsync(IReadOnlyCollection<long> ids, long syncedAt, CancellationToken cancellationToken)
+    public async Task MarkSyncOutboxMessagesSucceededAsync(
+        IReadOnlyCollection<SyncOutboxMessage> dispatchedMessages,
+        long syncedAt,
+        CancellationToken cancellationToken)
     {
+        var dispatchedById = dispatchedMessages.ToDictionary(message => message.Id);
+        var ids = dispatchedById.Keys.ToArray();
         var messages = await dbContext.SyncOutboxMessages
             .Where(item => ids.Contains(item.Id))
             .ToListAsync(cancellationToken);
-        foreach (var message in messages)
+        foreach (var message in messages.Where(message => IsSameOutboxVersion(message, dispatchedById[message.Id])))
         {
             message.Status = SyncOutboxStatuses.Synced;
             message.LastError = null;
@@ -457,13 +545,19 @@ public sealed class EfCoreOeeLocalRepository(OeeDbContext dbContext) : IOeeLocal
         }
     }
 
-    public async Task MarkSyncOutboxMessagesFailedAsync(IReadOnlyCollection<long> ids, string error, long nextAttemptAt, CancellationToken cancellationToken)
+    public async Task MarkSyncOutboxMessagesFailedAsync(
+        IReadOnlyCollection<SyncOutboxMessage> dispatchedMessages,
+        string error,
+        long nextAttemptAt,
+        CancellationToken cancellationToken)
     {
+        var dispatchedById = dispatchedMessages.ToDictionary(message => message.Id);
+        var ids = dispatchedById.Keys.ToArray();
         var messages = await dbContext.SyncOutboxMessages
             .Where(item => ids.Contains(item.Id))
             .ToListAsync(cancellationToken);
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        foreach (var message in messages)
+        foreach (var message in messages.Where(message => IsSameOutboxVersion(message, dispatchedById[message.Id])))
         {
             message.Status = SyncOutboxStatuses.Failed;
             message.AttemptCount += 1;
@@ -477,4 +571,9 @@ public sealed class EfCoreOeeLocalRepository(OeeDbContext dbContext) : IOeeLocal
             await dbContext.SaveChangesAsync(cancellationToken);
         }
     }
+
+    private static bool IsSameOutboxVersion(SyncOutboxMessage current, SyncOutboxMessage dispatched) =>
+        current.UpdatedAt == dispatched.UpdatedAt &&
+        current.Status == dispatched.Status &&
+        string.Equals(current.PayloadJson, dispatched.PayloadJson, StringComparison.Ordinal);
 }

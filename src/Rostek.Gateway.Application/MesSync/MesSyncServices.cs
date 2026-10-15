@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Rostek.Gateway.Application.Oee;
@@ -76,9 +77,33 @@ public sealed class ProductionCommandService(
         long now,
         CancellationToken cancellationToken)
     {
+        var waitTimer = Stopwatch.StartNew();
         using var lease = await _gate.EnterAsync(cancellationToken);
-        return await repository.ExecuteTransactionAsync(
+        var waitMs = waitTimer.ElapsedMilliseconds;
+        var executionTimer = Stopwatch.StartNew();
+        var response = await repository.ExecuteTransactionAsync(
             token => HandleItemCoreAsync(request, gatewayId, now, token), cancellationToken);
+        var executionMs = executionTimer.ElapsedMilliseconds;
+        if (waitMs >= 500)
+        {
+            logger.LogWarning(
+                "Production command waited for OEE processing. Machine={Machine}, CommandCode={CommandCode}, GateWaitMs={GateWaitMs}, ExecutionMs={ExecutionMs}",
+                request.MachineCode,
+                request.CommandCode,
+                waitMs,
+                executionMs);
+        }
+        else
+        {
+            logger.LogDebug(
+                "Production command timing. Machine={Machine}, CommandCode={CommandCode}, GateWaitMs={GateWaitMs}, ExecutionMs={ExecutionMs}",
+                request.MachineCode,
+                request.CommandCode,
+                waitMs,
+                executionMs);
+        }
+
+        return response;
     }
 
     private async Task<ProductionCommandResponse> HandleItemCoreAsync(
@@ -505,15 +530,14 @@ public sealed class RealtimeSnapshotBuilder(
             .Where(machine => machine.Enabled)
             .OrderBy(machine => machine.MachineCode, StringComparer.OrdinalIgnoreCase)
             .ToList();
+        var latestRawByMachine = await repository.GetLatestRawIntervalsAsync(
+            enabledMachines.Select(machine => machine.MachineCode).ToArray(),
+            cancellationToken);
 
         foreach (var machine in enabledMachines)
         {
             var hasCurrentRaw = currentRawByMachine.TryGetValue(machine.MachineCode, out var currentRaw);
             var contexts = productionContextCache.GetCapturableByMachine(machine.MachineCode);
-            if (contexts.Count == 0)
-            {
-                contexts = await repository.ListCapturableProductionContextsAsync(machine.MachineCode, cancellationToken);
-            }
 
             if (contexts.Count == 0)
             {
@@ -526,7 +550,7 @@ public sealed class RealtimeSnapshotBuilder(
             var effectiveRaw = currentRaw;
             if (effectiveRaw is null)
             {
-                effectiveRaw = await repository.GetLatestRawIntervalAsync(machine.MachineCode, cancellationToken);
+                latestRawByMachine.TryGetValue(machine.MachineCode, out effectiveRaw);
             }
 
             foreach (var context in contexts)
@@ -705,14 +729,22 @@ public sealed class MachineStateEventBuilder(
         var changed = new List<MachineStateEvent>();
         var skipped = 0;
         var gapThresholdSeconds = Math.Max(1, options.Value.MachineStateEventGapThresholdMs / 1000);
+        var contextsByMachine = rawIntervals
+            .Select(raw => raw.Machine)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                machine => machine,
+                machine => productionContextCache.GetCapturableByMachine(machine),
+                StringComparer.OrdinalIgnoreCase);
+        var openEvents = new Dictionary<string, MachineStateEvent>(
+            await repository.GetOpenMachineStateEventsAsync(
+                contextsByMachine.Values.SelectMany(contexts => contexts).Select(context => context.SessionId).ToArray(),
+                cancellationToken),
+            StringComparer.OrdinalIgnoreCase);
 
         foreach (var raw in rawIntervals.OrderBy(item => item.ReadAt).ThenBy(item => item.Machine, StringComparer.OrdinalIgnoreCase))
         {
-            var contexts = productionContextCache.GetCapturableByMachine(raw.Machine);
-            if (contexts.Count == 0)
-            {
-                contexts = await repository.ListCapturableProductionContextsAsync(raw.Machine, cancellationToken);
-            }
+            var contexts = contextsByMachine.GetValueOrDefault(raw.Machine) ?? [];
 
             if (contexts.Count == 0)
             {
@@ -722,15 +754,13 @@ public sealed class MachineStateEventBuilder(
 
             foreach (var context in contexts)
             {
-                var openEvent = await repository.GetOpenMachineStateEventAsync(
-                    context.Machine,
-                    context.OrderId,
-                    context.SessionId,
-                    cancellationToken);
+                openEvents.TryGetValue(context.SessionId, out var openEvent);
 
                 if (openEvent is null)
                 {
-                    changed.Add(CreateEvent(gatewayId, context, raw.RunState, raw.ReadAt, raw.ReadAt, isOpen: true, createdAt));
+                    var created = CreateEvent(gatewayId, context, raw.RunState, raw.ReadAt, raw.ReadAt, isOpen: true, createdAt);
+                    changed.Add(created);
+                    openEvents[context.SessionId] = created;
                     continue;
                 }
 
@@ -749,7 +779,9 @@ public sealed class MachineStateEventBuilder(
                     changed.Add(openEvent);
 
                     changed.Add(CreateEvent(gatewayId, context, OeeRunStates.Disconnect, openEvent.EndAt, raw.ReadAt, isOpen: false, createdAt));
-                    changed.Add(CreateEvent(gatewayId, context, raw.RunState, raw.ReadAt, raw.ReadAt, isOpen: true, createdAt));
+                    var created = CreateEvent(gatewayId, context, raw.RunState, raw.ReadAt, raw.ReadAt, isOpen: true, createdAt);
+                    changed.Add(created);
+                    openEvents[context.SessionId] = created;
 
                     logger.LogInformation(
                         "Machine state event gap detected. Machine={Machine}, OrderId={OrderId}, SessionId={SessionId}, PreviousEndAt={PreviousEndAt}, RawReadAt={RawReadAt}, GapSeconds={GapSeconds}",
@@ -776,7 +808,9 @@ public sealed class MachineStateEventBuilder(
                 openEvent.DurationSec = Math.Max(0, openEvent.EndAt - openEvent.StartAt);
                 openEvent.UpdatedAt = createdAt;
                 changed.Add(openEvent);
-                changed.Add(CreateEvent(gatewayId, context, raw.RunState, raw.ReadAt, raw.ReadAt, isOpen: true, createdAt));
+                var next = CreateEvent(gatewayId, context, raw.RunState, raw.ReadAt, raw.ReadAt, isOpen: true, createdAt);
+                changed.Add(next);
+                openEvents[context.SessionId] = next;
             }
         }
 
@@ -828,24 +862,37 @@ public sealed class OeeLocalProcessingService(
         long createdAt,
         CancellationToken cancellationToken)
     {
+        var realtime = await ProcessRealtimeAsync(gatewayId, rawIntervals, createdAt, cancellationToken);
+        var metrics = await ProcessProductionMetricsAsync(gatewayId, rawIntervals, createdAt, cancellationToken);
+        return realtime with
+        {
+            ProductionMetrics = metrics,
+            EnqueuedOutboxCount = realtime.EnqueuedOutboxCount +
+                (options.Value.ProductionMetricsEnabled ? metrics.Metrics.Count : 0)
+        };
+    }
+
+    public async Task<OeeLocalProcessingResult> ProcessRealtimeAsync(
+        string gatewayId,
+        IReadOnlyCollection<PlcRawInterval> rawIntervals,
+        long createdAt,
+        CancellationToken cancellationToken)
+    {
         var stateEvents = await stateEventBuilder.BuildAsync(gatewayId, rawIntervals, createdAt, cancellationToken);
         var snapshot = await snapshotBuilder.BuildAsync(gatewayId, rawIntervals, createdAt, cancellationToken);
-        var productionMetrics = await productionMetricBuilder.BuildAsync(gatewayId, rawIntervals, createdAt, cancellationToken);
-        var enqueued = 0;
         var current = options.Value;
+        var messages = new List<SyncOutboxMessage>();
 
         if (current.MachineStateEventsEnabled)
         {
             foreach (var stateEvent in stateEvents.Events)
             {
-                await EnqueueAsync(
+                messages.Add(CreateOutboxMessage(
                     SyncOutboxTopics.MachineStateEvent,
                     $"machine_state_event:{stateEvent.EventId}",
                     MesSyncEndpointPaths.MachineStateEvents,
                     ToPayloadItem(stateEvent),
-                    createdAt,
-                    cancellationToken);
-                enqueued++;
+                    createdAt));
             }
         }
 
@@ -855,56 +902,72 @@ public sealed class OeeLocalProcessingService(
             foreach (var item in snapshot.Payload.Items)
             {
                 var dedupeKey = BuildRealtimeSnapshotDedupeKey(item);
-                await EnqueueAsync(
+                messages.Add(CreateOutboxMessage(
                     SyncOutboxTopics.RealtimeSnapshot,
                     dedupeKey,
                     MesSyncEndpointPaths.RealtimeSnapshots,
                     item,
-                    createdAt,
-                    cancellationToken);
+                    createdAt));
                 retainedDedupeKeys.Add(dedupeKey);
-                enqueued++;
             }
 
+            await repository.UpsertSyncOutboxMessagesAsync(messages, cancellationToken);
+            messages.Clear();
             await repository.RemoveStaleRealtimeSnapshotMessagesAsync(retainedDedupeKeys, cancellationToken);
         }
 
-        if (current.ProductionMetricsEnabled)
+        if (messages.Count > 0)
         {
-            foreach (var metric in productionMetrics.Metrics)
-            {
-                await EnqueueAsync(
-                    SyncOutboxTopics.ProductionMetric,
-                    $"production_metric:{metric.MetricId}",
-                    MesSyncEndpointPaths.ProductionMetrics,
-                    ToPayloadItem(metric),
-                    createdAt,
-                    cancellationToken);
-                enqueued++;
-            }
+            await repository.UpsertSyncOutboxMessagesAsync(messages, cancellationToken);
         }
 
+        var enqueued = (current.MachineStateEventsEnabled ? stateEvents.Events.Count : 0) +
+            (current.RealtimeSnapshotsEnabled ? snapshot.Payload.Items.Count : 0);
         logger.LogDebug(
-            "OEE local processing completed. RawIntervals={RawIntervals}, StateEvents={StateEvents}, SnapshotItems={SnapshotItems}, ProductionMetrics={ProductionMetrics}, Enqueued={Enqueued}",
+            "OEE realtime processing completed. RawIntervals={RawIntervals}, StateEvents={StateEvents}, SnapshotItems={SnapshotItems}, Enqueued={Enqueued}",
             rawIntervals.Count,
             stateEvents.Events.Count,
             snapshot.Payload.Items.Count,
-            productionMetrics.Metrics.Count,
             enqueued);
 
-        return new OeeLocalProcessingResult(snapshot, stateEvents, productionMetrics, enqueued);
+        return new OeeLocalProcessingResult(snapshot, stateEvents, new ProductionMetricBuildResult([], 0), enqueued);
     }
 
-    private async Task EnqueueAsync<TPayload>(
+    public async Task<ProductionMetricBuildResult> ProcessProductionMetricsAsync(
+        string gatewayId,
+        IReadOnlyCollection<PlcRawInterval> rawIntervals,
+        long createdAt,
+        CancellationToken cancellationToken)
+    {
+        var result = await productionMetricBuilder.BuildAsync(gatewayId, rawIntervals, createdAt, cancellationToken);
+        if (!options.Value.ProductionMetricsEnabled || result.Metrics.Count == 0)
+        {
+            return result;
+        }
+
+        var messages = result.Metrics.Select(metric => CreateOutboxMessage(
+            SyncOutboxTopics.ProductionMetric,
+            $"production_metric:{metric.MetricId}",
+            MesSyncEndpointPaths.ProductionMetrics,
+            ToPayloadItem(metric),
+            createdAt)).ToArray();
+        await repository.UpsertSyncOutboxMessagesAsync(messages, cancellationToken);
+        logger.LogDebug(
+            "OEE production metric processing completed. RawIntervals={RawIntervals}, Metrics={Metrics}",
+            rawIntervals.Count,
+            result.Metrics.Count);
+        return result;
+    }
+
+    private static SyncOutboxMessage CreateOutboxMessage<TPayload>(
         string topic,
         string dedupeKey,
         string endpointPath,
         TPayload payload,
-        long createdAt,
-        CancellationToken cancellationToken)
+        long createdAt)
     {
         var payloadJson = JsonSerializer.Serialize(payload, PayloadJsonOptions);
-        await repository.UpsertSyncOutboxMessageAsync(new SyncOutboxMessage
+        return new SyncOutboxMessage
         {
             Topic = topic,
             DedupeKey = dedupeKey,
@@ -915,7 +978,7 @@ public sealed class OeeLocalProcessingService(
             NextAttemptAt = createdAt,
             CreatedAt = createdAt,
             UpdatedAt = createdAt
-        }, cancellationToken);
+        };
     }
 
     private static string BuildRealtimeSnapshotDedupeKey(RealtimeSnapshotItemPayload item) =>
@@ -984,10 +1047,6 @@ public sealed class ProductionMetricBuilder(
         foreach (var raw in rawIntervals.OrderBy(item => item.Machine, StringComparer.OrdinalIgnoreCase))
         {
             var contexts = productionContextCache.GetCapturableByMachine(raw.Machine);
-            if (contexts.Count == 0)
-            {
-                contexts = await repository.ListCapturableProductionContextsAsync(raw.Machine, cancellationToken);
-            }
 
             foreach (var context in contexts)
             {
@@ -1356,28 +1415,28 @@ public sealed class MesSyncOutboxDispatcher(
 
         foreach (var group in messages.GroupBy(message => message.EndpointPath, StringComparer.OrdinalIgnoreCase))
         {
-            var ids = group.Select(message => message.Id).ToArray();
+            var dispatchedMessages = group.ToArray();
             try
             {
-                var payload = BuildBatchPayload(gatewayId, now, group);
+                var payload = BuildBatchPayload(gatewayId, now, dispatchedMessages);
                 await httpClient.SendAsync(group.Key, payload, cancellationToken);
-                await repository.MarkSyncOutboxMessagesSucceededAsync(ids, now, cancellationToken);
-                sent += ids.Length;
+                await repository.MarkSyncOutboxMessagesSucceededAsync(dispatchedMessages, now, cancellationToken);
+                sent += dispatchedMessages.Length;
                 logger.LogInformation(
                     "MES sync outbox batch sent. Endpoint={Endpoint}, Items={ItemCount}",
                     group.Key,
-                    ids.Length);
+                    dispatchedMessages.Length);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 var nextAttemptAt = now + CalculateRetryDelaySeconds(group.Max(message => message.AttemptCount), current.RetryCount);
-                await repository.MarkSyncOutboxMessagesFailedAsync(ids, ex.Message, nextAttemptAt, cancellationToken);
-                failed += ids.Length;
+                await repository.MarkSyncOutboxMessagesFailedAsync(dispatchedMessages, ex.Message, nextAttemptAt, cancellationToken);
+                failed += dispatchedMessages.Length;
                 logger.LogWarning(
                     null,
                     "MES sync outbox batch failed. Endpoint={Endpoint}, Items={ItemCount}, NextAttemptAt={NextAttemptAt}",
                     group.Key,
-                    ids.Length,
+                    dispatchedMessages.Length,
                     nextAttemptAt);
             }
         }
@@ -1421,8 +1480,8 @@ public sealed class RealtimeSnapshotSyncService(
     IOptions<MesSyncOptions> options,
     IRawDataCaptureService rawDataCaptureService,
     IOeeLocalProcessingService localProcessingService,
-    ISyncOutboxDispatcher outboxDispatcher,
-    IRealtimeSnapshotSyncStatusStore statusStore,
+    ProductionMetricBuildSchedule metricBuildSchedule,
+    ILogger<RealtimeSnapshotSyncService> logger,
     OeeProcessingGate? processingGate = null) : IRealtimeSnapshotSyncService
 {
     public async Task<RealtimeSnapshotBuildResult> SyncAsync(string gatewayId, CancellationToken cancellationToken)
@@ -1430,35 +1489,83 @@ public sealed class RealtimeSnapshotSyncService(
         var current = options.Value;
         var interval = TimeSpan.FromMilliseconds(Math.Max(1000, current.SyncIntervalMs));
         RealtimeSnapshotBuildResult build;
+        IReadOnlyCollection<PlcRawInterval> rawIntervals;
         long createdAt;
+        var total = Stopwatch.StartNew();
+        var wait = Stopwatch.StartNew();
         using (await (processingGate ?? OeeProcessingGate.Shared).EnterAsync(cancellationToken))
         {
-            var rawIntervals = await rawDataCaptureService.CaptureAsync(interval, current.RequireProductionContext, cancellationToken);
+            var waitedMs = wait.ElapsedMilliseconds;
+            var critical = Stopwatch.StartNew();
+            rawIntervals = await rawDataCaptureService.CaptureAsync(interval, current.RequireProductionContext, cancellationToken);
             createdAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-            var processed = await localProcessingService.ProcessAsync(gatewayId, rawIntervals, createdAt, cancellationToken);
+            var processed = await localProcessingService.ProcessRealtimeAsync(gatewayId, rawIntervals, createdAt, cancellationToken);
             build = processed.RealtimeSnapshot;
-        }
-        if (build.Payload.Items.Count == 0)
-        {
-            return build;
-        }
-
-        if (!current.RealtimeSnapshotsEnabled)
-        {
-            return build;
+            logger.LogDebug(
+                "Realtime OEE critical section completed. GateWaitMs={GateWaitMs}, CriticalMs={CriticalMs}, RawIntervals={RawIntervals}, SnapshotItems={SnapshotItems}",
+                waitedMs,
+                critical.ElapsedMilliseconds,
+                rawIntervals.Count,
+                build.Payload.Items.Count);
         }
 
-        var dispatch = await outboxDispatcher.DispatchPendingAsync(gatewayId, [SyncOutboxTopics.RealtimeSnapshot], cancellationToken);
-        if (dispatch.FailedCount > 0)
+        var metricMs = 0L;
+        if (current.ProductionMetricsEnabled &&
+            rawIntervals.Count > 0 &&
+            metricBuildSchedule.TryAcquire(createdAt, current.ProductionMetricHourUpdateIntervalMs))
         {
-            statusStore.MarkDropped($"{dispatch.FailedCount} realtime snapshot outbox items failed.");
+            var metricTimer = Stopwatch.StartNew();
+            try
+            {
+                await localProcessingService.ProcessProductionMetricsAsync(
+                    gatewayId,
+                    rawIntervals,
+                    createdAt,
+                    cancellationToken);
+            }
+            catch
+            {
+                metricBuildSchedule.ReleaseForRetry();
+                throw;
+            }
+
+            metricMs = metricTimer.ElapsedMilliseconds;
         }
-        else if (dispatch.SentCount > 0)
-        {
-            statusStore.MarkSuccess(createdAt, dispatch.SentCount);
-        }
+
+        logger.LogDebug(
+            "Realtime OEE cycle completed. TotalMs={TotalMs}, ProductionMetricMs={ProductionMetricMs}",
+            total.ElapsedMilliseconds,
+            metricMs);
 
         return build;
+    }
+}
+
+public sealed class ProductionMetricBuildSchedule
+{
+    private readonly object _sync = new();
+    private long _nextBuildAt;
+
+    public bool TryAcquire(long now, int intervalMs)
+    {
+        lock (_sync)
+        {
+            if (now < _nextBuildAt)
+            {
+                return false;
+            }
+
+            _nextBuildAt = now + Math.Max(1, intervalMs / 1000);
+            return true;
+        }
+    }
+
+    public void ReleaseForRetry()
+    {
+        lock (_sync)
+        {
+            _nextBuildAt = 0;
+        }
     }
 }
 

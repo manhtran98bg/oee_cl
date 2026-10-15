@@ -119,7 +119,46 @@ public sealed class Net100RuntimeTests
         }
     }
 
-    private static EffectiveMachineConfiguration CreateMachine(Guid templateId, string machineCode, string address) =>
+    [Fact]
+    public async Task Profile_scheduler_staggers_machines_and_limits_concurrent_requests()
+    {
+        var templateId = Guid.NewGuid();
+        var adapterFactory = new FakeNet100AdapterFactory(LiveXml, expectedReads: 4, delayMs: 120);
+        var valueStore = new MachineValueStore();
+        var options = Options.Create(new RuntimeOptions
+        {
+            MinimumPollingIntervalMs = 100,
+            MaxNet100ConcurrentRequests = 2
+        });
+        var profile = new Net100ProfileRuntime(
+            templateId,
+            Enumerable.Range(1, 4)
+                .Select(index => CreateMachine(templateId, $"JSW-{index:00}", $"172.20.20.{10 + index}", 800))
+                .ToArray(),
+            adapterFactory,
+            new Net100LiveParser(new Net100LastShotInfoParser()),
+            valueStore,
+            options,
+            NullLogger<Net100ProfileRuntime>.Instance);
+
+        try
+        {
+            await profile.StartAsync(CancellationToken.None);
+            await adapterFactory.ReadsCompleted.Task.WaitAsync(TimeSpan.FromSeconds(4));
+
+            var firstReads = adapterFactory.FirstReadAt.Values.OrderBy(value => value).ToArray();
+            Assert.Equal(4, firstReads.Length);
+            Assert.True(firstReads[^1] - firstReads[0] >= TimeSpan.FromMilliseconds(350));
+            Assert.InRange(adapterFactory.MaxConcurrentRequests, 1, 2);
+            Assert.All(adapterFactory.MaxConcurrentByAddress.Values, value => Assert.Equal(1, value));
+        }
+        finally
+        {
+            await profile.DisposeAsync();
+        }
+    }
+
+    private static EffectiveMachineConfiguration CreateMachine(Guid templateId, string machineCode, string address, int pollingIntervalMs = 200) =>
         new(
             Guid.NewGuid(),
             machineCode,
@@ -139,7 +178,7 @@ public sealed class Net100RuntimeTests
                 1000,
                 1000,
                 0,
-                200,
+                pollingIntervalMs,
                 new Dictionary<string, object> { [OeeTimeSources.OptionName] = OeeTimeSources.GatewayState }),
             [
                 new EffectiveSignalConfiguration("MACHINE_STATE", Net100Configuration.MachineStateSource, "STRING", null, 1, 0, true, true, null, null),
@@ -150,31 +189,54 @@ public sealed class Net100RuntimeTests
             TemplateId = templateId
         };
 
-    private sealed class FakeNet100AdapterFactory(string responseXml, int expectedReads) : INet100ClientAdapterFactory
+    private sealed class FakeNet100AdapterFactory(string responseXml, int expectedReads, int delayMs = 0) : INet100ClientAdapterFactory
     {
         private int _readCount;
+        private int _concurrentRequests;
+        private readonly ConcurrentDictionary<string, int> _concurrentByAddress = new(StringComparer.OrdinalIgnoreCase);
 
         public int CreateCount { get; private set; }
         public ConcurrentBag<string> Addresses { get; } = [];
+        public ConcurrentDictionary<string, DateTimeOffset> FirstReadAt { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public ConcurrentDictionary<string, int> MaxConcurrentByAddress { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public int MaxConcurrentRequests { get; private set; }
         public TaskCompletionSource ReadsCompleted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public INet100ClientAdapter Create(Uri baseAddress, string? authenticationMode, string? credentialReference)
         {
             CreateCount++;
-            return new FakeNet100Adapter(this, responseXml, expectedReads);
+            return new FakeNet100Adapter(this, responseXml, expectedReads, delayMs);
         }
 
-        private sealed class FakeNet100Adapter(FakeNet100AdapterFactory owner, string xml, int expectedReads) : INet100ClientAdapter
+        private sealed class FakeNet100Adapter(FakeNet100AdapterFactory owner, string xml, int expectedReads, int delayMs) : INet100ClientAdapter
         {
-            public Task<string> ReadLiveAsync(string machineAddress, int timeoutMs, CancellationToken cancellationToken)
+            public async Task<string> ReadLiveAsync(string machineAddress, int timeoutMs, CancellationToken cancellationToken)
             {
+                owner.FirstReadAt.TryAdd(machineAddress, DateTimeOffset.UtcNow);
                 owner.Addresses.Add(machineAddress);
-                if (Interlocked.Increment(ref owner._readCount) >= expectedReads)
+                var concurrent = Interlocked.Increment(ref owner._concurrentRequests);
+                owner.MaxConcurrentRequests = Math.Max(owner.MaxConcurrentRequests, concurrent);
+                var addressConcurrent = owner._concurrentByAddress.AddOrUpdate(machineAddress, 1, (_, current) => current + 1);
+                owner.MaxConcurrentByAddress.AddOrUpdate(machineAddress, addressConcurrent, (_, current) => Math.Max(current, addressConcurrent));
+                try
                 {
-                    owner.ReadsCompleted.TrySetResult();
-                }
+                    if (delayMs > 0)
+                    {
+                        await Task.Delay(delayMs, cancellationToken);
+                    }
 
-                return Task.FromResult(xml.Replace("172.20.20.11", machineAddress, StringComparison.Ordinal));
+                    if (Interlocked.Increment(ref owner._readCount) >= expectedReads)
+                    {
+                        owner.ReadsCompleted.TrySetResult();
+                    }
+
+                    return xml.Replace("172.20.20.11", machineAddress, StringComparison.Ordinal);
+                }
+                finally
+                {
+                    owner._concurrentByAddress.AddOrUpdate(machineAddress, 0, (_, current) => Math.Max(0, current - 1));
+                    Interlocked.Decrement(ref owner._concurrentRequests);
+                }
             }
 
             public ValueTask DisposeAsync() => ValueTask.CompletedTask;

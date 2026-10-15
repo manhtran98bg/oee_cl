@@ -11,7 +11,7 @@ public sealed class ProductionScheduleService(
     IProductionScheduleRepository schedules,
     IConfigRepository config,
     IOeeLocalRepository oee,
-    OeeProcessingGate gate,
+    ProductionScheduleGate gate,
     TimeProvider clock) : IProductionScheduleService
 {
     public async Task<IReadOnlyList<ProductionScheduleListItem>> ListAsync(CancellationToken cancellationToken)

@@ -22,10 +22,22 @@ public sealed class RawDataCaptureService(
     {
         var intervalSeconds = Math.Max(1, (long)interval.TotalSeconds);
         var rawIntervals = new List<PlcRawInterval>();
+        var snapshots = valueReader.GetSnapshots()
+            .OrderBy(item => item.MachineCode, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var latestRawByMachine = await repository.GetLatestRawIntervalsAsync(
+            snapshots.Select(item => item.MachineCode).ToArray(),
+            cancellationToken);
 
-        foreach (var snapshot in valueReader.GetSnapshots().OrderBy(item => item.MachineCode, StringComparer.OrdinalIgnoreCase))
+        foreach (var snapshot in snapshots)
         {
-            var raw = await TryCreateRawIntervalAsync(snapshot, intervalSeconds, requireProductionContext, cancellationToken);
+            latestRawByMachine.TryGetValue(snapshot.MachineCode, out var latestRaw);
+            var raw = await TryCreateRawIntervalAsync(
+                snapshot,
+                latestRaw,
+                intervalSeconds,
+                requireProductionContext,
+                cancellationToken);
             if (raw is not null)
             {
                 rawIntervals.Add(raw);
@@ -45,6 +57,7 @@ public sealed class RawDataCaptureService(
 
     private async Task<PlcRawInterval?> TryCreateRawIntervalAsync(
         MachineValueSnapshotDto snapshot,
+        PlcRawInterval? latestRaw,
         long intervalSeconds,
         bool requireProductionContext,
         CancellationToken cancellationToken)
@@ -56,10 +69,6 @@ public sealed class RawDataCaptureService(
 
         var readAt = AlignToInterval(snapshot.LastReadUtc.Value.ToUniversalTime().ToUnixTimeSeconds(), intervalSeconds);
         var contexts = productionContextCache.GetCapturableByMachine(snapshot.MachineCode);
-        if (contexts.Count == 0)
-        {
-            contexts = await repository.ListCapturableProductionContextsAsync(snapshot.MachineCode, cancellationToken);
-        }
 
         if (contexts.Count == 0 && !requireProductionContext)
         {
@@ -109,7 +118,7 @@ public sealed class RawDataCaptureService(
                 runState,
                 readAt,
                 intervalSeconds * 3,
-                token => repository.GetLatestRawIntervalAsync(snapshot.MachineCode, token),
+                _ => Task.FromResult(latestRaw),
                 cancellationToken);
         }
         else

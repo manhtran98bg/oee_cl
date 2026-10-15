@@ -14,13 +14,14 @@ public sealed class MesSyncOptions
     public int TimeoutSeconds { get; set; } = 30;
     public int RetryCount { get; set; } = 3;
     public int BatchSize { get; set; } = 100;
-    public int SyncIntervalMs { get; set; } = 5000;
+    public int SyncIntervalMs { get; set; } = 10000;
+    public int OutboxDispatchIntervalMs { get; set; } = 1000;
     public int MachineStateEventSyncIntervalMs { get; set; } = 60000;
     public int ProductionMetricSyncIntervalMs { get; set; } = 60000;
     public int ProductionMetricHourUpdateIntervalMs { get; set; } = 60000;
     public int ProductionMetricDayUpdateIntervalMs { get; set; } = 300000;
     public string ProductionMetricTimeZoneId { get; set; } = "Asia/Ho_Chi_Minh";
-    public int MachineStateEventGapThresholdMs { get; set; } = 15000;
+    public int MachineStateEventGapThresholdMs { get; set; } = 30000;
     public bool RequireProductionContext { get; set; }
 }
 
@@ -289,6 +290,18 @@ public interface IProductionMetricBuilder
 public interface IOeeLocalProcessingService
 {
     Task<OeeLocalProcessingResult> ProcessAsync(
+        string gatewayId,
+        IReadOnlyCollection<Rostek.Gateway.Domain.Entities.PlcRawInterval> rawIntervals,
+        long createdAt,
+        CancellationToken cancellationToken);
+
+    Task<OeeLocalProcessingResult> ProcessRealtimeAsync(
+        string gatewayId,
+        IReadOnlyCollection<Rostek.Gateway.Domain.Entities.PlcRawInterval> rawIntervals,
+        long createdAt,
+        CancellationToken cancellationToken);
+
+    Task<ProductionMetricBuildResult> ProcessProductionMetricsAsync(
         string gatewayId,
         IReadOnlyCollection<Rostek.Gateway.Domain.Entities.PlcRawInterval> rawIntervals,
         long createdAt,

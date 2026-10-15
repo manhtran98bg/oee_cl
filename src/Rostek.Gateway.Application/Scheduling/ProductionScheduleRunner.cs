@@ -12,17 +12,22 @@ public sealed class ProductionScheduleRunner(
     IConfigRepository config,
     IOeeLocalRepository oee,
     IProductionCommandService commands,
-    OeeProcessingGate gate,
+    OeeProcessingGate oeeGate,
+    ProductionScheduleGate scheduleGate,
     TimeProvider clock,
     ILogger<ProductionScheduleRunner> logger,
     string gatewayId) : IProductionScheduleRunner
 {
     public async Task RunDueAsync(CancellationToken cancellationToken)
     {
-        using var lease = await gate.EnterAsync(cancellationToken);
         var now = clock.GetUtcNow().ToUnixTimeSeconds();
-        await MaterializeDueRunsAsync(now, cancellationToken);
-        var pending = await schedules.ListPendingMachinesAsync(cancellationToken);
+        IReadOnlyList<ProductionScheduleMachineRun> pending;
+        using (await scheduleGate.EnterAsync(cancellationToken))
+        {
+            await MaterializeDueRunsAsync(now, cancellationToken);
+            pending = await schedules.ListPendingMachinesAsync(cancellationToken);
+        }
+
         foreach (var group in pending.GroupBy(item => item.MachineId))
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -31,6 +36,8 @@ public sealed class ProductionScheduleRunner(
             var ids = group.Select(item => item.Id).ToArray();
             try
             {
+                using var oeeLease = await oeeGate.EnterAsync(cancellationToken);
+                using var scheduleLease = await scheduleGate.EnterAsync(cancellationToken);
                 await oee.ExecuteTransactionAsync(async token =>
                 {
                     var rows = await schedules.GetMachineRunsAsync(ids, token);
@@ -63,6 +70,7 @@ public sealed class ProductionScheduleRunner(
             {
                 logger.LogWarning(ex, "Scheduled session rotation failed. MachineId={MachineId}, ExecutionId={ExecutionId}", group.Key, winner.Id);
                 // Reload after rollback: the persistent repository clears tracked, potentially changed contexts.
+                using var scheduleLease = await scheduleGate.EnterAsync(cancellationToken);
                 await oee.ExecuteTransactionAsync(async token =>
                 {
                     var rows = await schedules.GetMachineRunsAsync(ids, token);
@@ -81,7 +89,11 @@ public sealed class ProductionScheduleRunner(
                 }, cancellationToken);
             }
         }
-        await CompleteRunsAsync(clock.GetUtcNow().ToUnixTimeSeconds(), cancellationToken);
+
+        using (await scheduleGate.EnterAsync(cancellationToken))
+        {
+            await CompleteRunsAsync(clock.GetUtcNow().ToUnixTimeSeconds(), cancellationToken);
+        }
     }
 
     private async Task MaterializeDueRunsAsync(long now, CancellationToken cancellationToken)

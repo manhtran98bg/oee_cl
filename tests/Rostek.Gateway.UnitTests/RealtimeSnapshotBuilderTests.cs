@@ -180,7 +180,7 @@ public sealed class RealtimeSnapshotBuilderTests
     }
 
     [Fact]
-    public async Task Sync_drops_batch_when_client_fails()
+    public async Task Sync_builds_snapshot_without_waiting_for_http_dispatch()
     {
         var raw = Raw(readAt: 110, shotOk: 120, shotNg: 8, runTime: 18, stopTime: 4, errorTime: 2);
         var capture = new StubRawDataCaptureService([raw]);
@@ -191,18 +191,16 @@ public sealed class RealtimeSnapshotBuilderTests
             [new RealtimeSnapshotItemPayload("M16-01", "TEST_ORDER", "SESSION", "SP", null, "run", 1, 1, 1, 10, 100, 100, 10, EmptyExtra())]),
             1,
             0);
-        var status = new RealtimeSnapshotSyncStatusStore();
         var service = new RealtimeSnapshotSyncService(
             Options.Create(new MesSyncOptions { Enabled = true, BaseUrl = "http://localhost", SyncIntervalMs = 5000 }),
             capture,
             new StubOeeLocalProcessingService(snapshot),
-            new FailingOutboxDispatcher(),
-            status);
+            new ProductionMetricBuildSchedule(),
+            NullLogger<RealtimeSnapshotSyncService>.Instance);
 
-        await service.SyncAsync("GW-M16-01", CancellationToken.None);
+        var result = await service.SyncAsync("GW-M16-01", CancellationToken.None);
 
-        Assert.Equal(1, status.Current.DroppedBatchCount);
-        Assert.Contains("failed", status.Current.LastError, StringComparison.OrdinalIgnoreCase);
+        Assert.Single(result.Payload.Items);
     }
 
     private static RealtimeSnapshotBuilder CreateBuilder(
@@ -256,14 +254,17 @@ public sealed class RealtimeSnapshotBuilderTests
             long createdAt,
             CancellationToken cancellationToken) =>
             Task.FromResult(new OeeLocalProcessingResult(snapshot, new MachineStateEventBuildResult([], 0), new ProductionMetricBuildResult([], 0), 1));
-    }
 
-    private sealed class FailingOutboxDispatcher : ISyncOutboxDispatcher
-    {
-        public Task<SyncOutboxDispatchResult> DispatchPendingAsync(
+        public Task<OeeLocalProcessingResult> ProcessRealtimeAsync(
             string gatewayId,
-            IReadOnlyCollection<string> topics,
-            CancellationToken cancellationToken) =>
-            Task.FromResult(new SyncOutboxDispatchResult(0, 1));
+            IReadOnlyCollection<PlcRawInterval> rawIntervals,
+            long createdAt,
+            CancellationToken cancellationToken) => ProcessAsync(gatewayId, rawIntervals, createdAt, cancellationToken);
+
+        public Task<ProductionMetricBuildResult> ProcessProductionMetricsAsync(
+            string gatewayId,
+            IReadOnlyCollection<PlcRawInterval> rawIntervals,
+            long createdAt,
+            CancellationToken cancellationToken) => Task.FromResult(new ProductionMetricBuildResult([], 0));
     }
 }

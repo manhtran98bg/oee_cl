@@ -383,8 +383,8 @@ public sealed class ProductionScheduleTests
             var options = Options.Create(new MesSyncOptions());
             Metrics = new(repository, ContextCache, options, NullLogger<ProductionMetricBuilder>.Instance);
             _commands = new(repository, ContextCache, QuantityCache, Metrics, options, config, NullLogger<ProductionCommandService>.Instance, _gate);
-            Service = new(schedules, config, repository, _gate, Clock);
-            Runner = new(schedules, config, repository, _commands, _gate, Clock, NullLogger<ProductionScheduleRunner>.Instance, "GW");
+            Service = new(schedules, config, repository, new ProductionScheduleGate(), Clock);
+            Runner = new(schedules, config, repository, _commands, _gate, new ProductionScheduleGate(), Clock, NullLogger<ProductionScheduleRunner>.Instance, "GW");
         }
 
         public async Task<Machine> AddMachineAsync(string code, bool enabled = true)

@@ -170,6 +170,12 @@ public sealed class InMemoryOeeLocalRepository : IOeeLocalRepository
     {
         foreach (var metric in metrics)
         {
+            var existing = ProductionMetrics.FirstOrDefault(item => item.MetricId == metric.MetricId);
+            if (existing is { IsFinal: true } && !metric.IsFinal)
+            {
+                continue;
+            }
+
             ProductionMetrics.RemoveAll(item => item.MetricId == metric.MetricId);
             ProductionMetrics.Add(metric);
         }
@@ -201,6 +207,21 @@ public sealed class InMemoryOeeLocalRepository : IOeeLocalRepository
                 item.IsOpen)
             .OrderByDescending(item => item.StartAt)
             .FirstOrDefault());
+
+    public Task<IReadOnlyDictionary<string, MachineStateEvent>> GetOpenMachineStateEventsAsync(
+        IReadOnlyCollection<string> sessionIds,
+        CancellationToken cancellationToken)
+    {
+        var ids = sessionIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var result = MachineStateEvents
+            .Where(item => item.IsOpen && ids.Contains(item.SessionId))
+            .GroupBy(item => item.SessionId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => group.OrderByDescending(item => item.StartAt).First(),
+                StringComparer.OrdinalIgnoreCase);
+        return Task.FromResult<IReadOnlyDictionary<string, MachineStateEvent>>(result);
+    }
 
     public Task SaveMachineStateEventsAsync(IReadOnlyCollection<MachineStateEvent> stateEvents, CancellationToken cancellationToken)
     {
@@ -267,10 +288,18 @@ public sealed class InMemoryOeeLocalRepository : IOeeLocalRepository
         return Task.FromResult<IReadOnlyList<SyncOutboxMessage>>(messages);
     }
 
-    public Task MarkSyncOutboxMessagesSucceededAsync(IReadOnlyCollection<long> ids, long syncedAt, CancellationToken cancellationToken)
+    public Task MarkSyncOutboxMessagesSucceededAsync(IReadOnlyCollection<SyncOutboxMessage> dispatchedMessages, long syncedAt, CancellationToken cancellationToken)
     {
+        var dispatchedById = dispatchedMessages.ToDictionary(message => message.Id);
+        var ids = dispatchedById.Keys.ToHashSet();
         foreach (var message in SyncOutboxMessages.Where(item => ids.Contains(item.Id)))
         {
+            var dispatched = dispatchedById[message.Id];
+            if (message.UpdatedAt != dispatched.UpdatedAt || message.Status != dispatched.Status || message.PayloadJson != dispatched.PayloadJson)
+            {
+                continue;
+            }
+
             message.Status = SyncOutboxStatuses.Synced;
             message.LastError = null;
             message.SyncedAt = syncedAt;
@@ -280,11 +309,19 @@ public sealed class InMemoryOeeLocalRepository : IOeeLocalRepository
         return Task.CompletedTask;
     }
 
-    public Task MarkSyncOutboxMessagesFailedAsync(IReadOnlyCollection<long> ids, string error, long nextAttemptAt, CancellationToken cancellationToken)
+    public Task MarkSyncOutboxMessagesFailedAsync(IReadOnlyCollection<SyncOutboxMessage> dispatchedMessages, string error, long nextAttemptAt, CancellationToken cancellationToken)
     {
+        var dispatchedById = dispatchedMessages.ToDictionary(message => message.Id);
+        var ids = dispatchedById.Keys.ToHashSet();
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         foreach (var message in SyncOutboxMessages.Where(item => ids.Contains(item.Id)))
         {
+            var dispatched = dispatchedById[message.Id];
+            if (message.UpdatedAt != dispatched.UpdatedAt || message.Status != dispatched.Status || message.PayloadJson != dispatched.PayloadJson)
+            {
+                continue;
+            }
+
             message.Status = SyncOutboxStatuses.Failed;
             message.AttemptCount += 1;
             message.LastError = error;
