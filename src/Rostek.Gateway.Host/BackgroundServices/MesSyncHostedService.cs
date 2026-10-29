@@ -4,7 +4,8 @@ using Rostek.Gateway.Host.Options;
 
 namespace Rostek.Gateway.Host.BackgroundServices;
 
-public sealed class MesSyncHostedService(
+public sealed class 
+    MesSyncHostedService(
     IOptions<MesSyncOptions> mesSyncOptions,
     IOptions<GatewayOptions> gatewayOptions,
     IServiceScopeFactory scopeFactory,
