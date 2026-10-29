@@ -2,6 +2,8 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Rostek.Gateway.Application.Oee;
@@ -65,6 +67,7 @@ public sealed class ProductionCommandService(
             MachineCode = request.MachineCode,
             Action = request.Action,
             OrderId = request.ProductionOrderCode,
+            QuantityUpdateSource = request.QuantityUpdateSource,
             Products = request.Products
         };
         var now = request.OccurredAtUnixTimeSeconds ?? DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -166,6 +169,11 @@ public sealed class ProductionCommandService(
         long now,
         CancellationToken cancellationToken)
     {
+        if (!QuantityUpdateSources.TryNormalize(request.QuantityUpdateSource, out var quantityUpdateSource))
+        {
+            return Reject(machine, request.CommandCode, orderId, null, "quantity_update_source is required and must be oi or oee when action is start.");
+        }
+
         var productValidation = ValidateProducts(request.Products);
         if (productValidation is not null)
         {
@@ -190,7 +198,17 @@ public sealed class ProductionCommandService(
 
         context.Status = "active";
         context.OrderId = orderId;
-        context.ProductsJson = JsonSerializer.Serialize(ToOeeProducts(request.Products!), JsonOptions);
+        var existingProducts = ReadProducts(context.ProductsJson);
+        if (!isNewSession && existingProducts.Any(product =>
+                request.Products!.Any(input => input.ProductCode.Equals(product.ProductId, StringComparison.OrdinalIgnoreCase)) &&
+                !NormalizeSource(product.QuantityUpdateSource).Equals(quantityUpdateSource, StringComparison.OrdinalIgnoreCase)))
+        {
+            return Reject(machine, request.CommandCode, orderId, context.SessionId, "quantity_update_source differs from the active session; use production-quantity-sources to change it.");
+        }
+
+        context.ProductsJson = JsonSerializer.Serialize(
+            ToOeeProducts(request.Products!, quantityUpdateSource, existingProducts),
+            JsonOptions);
         context.ExtraJson = "{}";
         if (isNewSession)
         {
@@ -268,6 +286,16 @@ public sealed class ProductionCommandService(
         long endedAt,
         CancellationToken cancellationToken)
     {
+        if (!ReadPrimaryProduct(context.ProductsJson).IsOeeQuantitySource)
+        {
+            logger.LogInformation(
+                "Final session metric skipped because quantity source is OI. Machine={Machine}, OrderId={OrderId}, SessionId={SessionId}",
+                context.Machine,
+                context.OrderId,
+                context.SessionId);
+            return;
+        }
+
         var metric = await productionMetricBuilder.BuildFinalSessionAsync(gatewayId, context, endedAt, cancellationToken);
         if (metric is null)
         {
@@ -434,15 +462,59 @@ public sealed class ProductionCommandService(
         return null;
     }
 
-    private static IReadOnlyList<OeeProductDefinition> ToOeeProducts(IReadOnlyList<ProductionCommandProduct> products) =>
-        products.Select(product => new OeeProductDefinition
+    private static IReadOnlyList<OeeProductDefinition> ToOeeProducts(
+        IReadOnlyList<ProductionCommandProduct> products,
+        string quantityUpdateSource,
+        IReadOnlyList<OeeProductDefinition> existingProducts)
+    {
+        var existingByCode = existingProducts.ToDictionary(product => product.ProductId, StringComparer.OrdinalIgnoreCase);
+        return products.Select(product =>
         {
-            ProductId = product.ProductCode.Trim(),
-            MoldCode = Normalize(product.MoldCode),
-            Gain = product.Cavity,
-            CycleTime = product.CycleTime,
-            Target = product.TargetQty
+            existingByCode.TryGetValue(product.ProductCode.Trim(), out var existing);
+            return new OeeProductDefinition
+            {
+                ProductId = product.ProductCode.Trim(),
+                MoldCode = Normalize(product.MoldCode),
+                Gain = product.Cavity,
+                CycleTime = product.CycleTime,
+                Target = product.TargetQty,
+                QuantityUpdateSource = quantityUpdateSource,
+                OeeAccumulatedShotOk = existing?.OeeAccumulatedShotOk ?? 0,
+                OeeAccumulatedShotNg = existing?.OeeAccumulatedShotNg ?? 0,
+                OeeAccumulatedRunTimeSec = existing?.OeeAccumulatedRunTimeSec ?? 0,
+                OeeAccumulatedStopTimeSec = existing?.OeeAccumulatedStopTimeSec ?? 0,
+                OeeAccumulatedErrorTimeSec = existing?.OeeAccumulatedErrorTimeSec ?? 0,
+                OeeAccumulatedProductionTimeSec = existing?.OeeAccumulatedProductionTimeSec ?? 0,
+                OeeBaselineShotOkTotal = existing?.OeeBaselineShotOkTotal,
+                OeeBaselineShotNgTotal = existing?.OeeBaselineShotNgTotal,
+                OeeBaselineCapturedAt = existing?.OeeBaselineCapturedAt,
+                OeeBaselineRunTimeTotalSec = existing?.OeeBaselineRunTimeTotalSec,
+                OeeBaselineStopTimeTotalSec = existing?.OeeBaselineStopTimeTotalSec,
+                OeeBaselineErrorTimeTotalSec = existing?.OeeBaselineErrorTimeTotalSec,
+                OeeSegmentStartedAt = existing?.OeeSegmentStartedAt,
+                OeeResumedAt = existing?.OeeResumedAt
+            };
         }).ToList();
+    }
+
+    private static IReadOnlyList<OeeProductDefinition> ReadProducts(string productsJson)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<List<OeeProductDefinition>>(productsJson, JsonOptions) ?? [];
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
+
+    private static OeeProductDefinition ReadPrimaryProduct(string productsJson) =>
+        ReadProducts(productsJson).FirstOrDefault(product => !string.IsNullOrWhiteSpace(product.ProductId)) ??
+        new OeeProductDefinition { ProductId = "UNKNOWN_PRODUCT" };
+
+    private static string NormalizeSource(string? source) =>
+        QuantityUpdateSources.TryNormalize(source, out var normalized) ? normalized : QuantityUpdateSources.Oee;
 
     private static string BuildSessionId(string machine, string orderId, long occurredAt) =>
         $"{Slug(machine)}-{Slug(orderId)}-{occurredAt}";
@@ -501,6 +573,227 @@ internal static class OeeQuantityCalculator
         var effectiveCavity = cavity > 0 ? cavity : 1m;
         return decimal.ToInt64(decimal.Floor(shotCount * effectiveCavity));
     }
+}
+
+public sealed class ProductionQuantitySourceService(
+    IOeeLocalRepository repository,
+    IConfigRepository configRepository,
+    IProductionContextCache productionContextCache,
+    ILogger<ProductionQuantitySourceService> logger,
+    OeeProcessingGate processingGate) : IProductionQuantitySourceService
+{
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+    };
+
+    public async Task<ProductionQuantitySourceResponse> HandleAsync(
+        ProductionQuantitySourceBatchRequest request,
+        CancellationToken cancellationToken)
+    {
+        var item = request.Items![0];
+        var eventCode = item.EventCode?.Trim() ?? string.Empty;
+        var machine = item.MachineCode?.Trim() ?? string.Empty;
+        var orderId = item.OrderId?.Trim() ?? string.Empty;
+        var productCode = item.ProductCode?.Trim() ?? string.Empty;
+        var source = item.QuantityUpdateSource?.Trim().ToLowerInvariant() ?? string.Empty;
+        var processedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var requestHash = BuildRequestHash(machine, orderId, productCode, source);
+
+        using var lease = await processingGate.EnterAsync(cancellationToken);
+        return await repository.ExecuteTransactionAsync(async token =>
+        {
+            var existingEvent = await repository.GetProductionQuantitySourceEventAsync(eventCode, token);
+            if (existingEvent is not null)
+            {
+                return existingEvent.RequestHash.Equals(requestHash, StringComparison.OrdinalIgnoreCase)
+                    ? ToResponse(existingEvent)
+                    : Reject(eventCode, "event_code_conflict", "event_code was already used for a different payload.");
+            }
+
+            ProductionQuantitySourceResponse response;
+            ProductionContext? context = null;
+            string? previousSource = null;
+
+            if (!QuantityUpdateSources.TryNormalize(source, out source))
+            {
+                response = Reject(eventCode, "invalid_quantity_update_source", "quantity_update_source must be oi or oee.");
+            }
+            else if (await configRepository.GetMachineByCodeAsync(machine, includeDetails: false, token) is null)
+            {
+                response = Reject(eventCode, "machine_not_found", $"machine_code {machine} does not exist.");
+            }
+            else if ((context = await repository.GetActiveProductionContextAsync(machine, orderId, token)) is null)
+            {
+                response = Reject(eventCode, "order_not_found", $"order_id {orderId} is not active on machine {machine}.");
+            }
+            else
+            {
+                var products = ReadProducts(context.ProductsJson);
+                var product = products.FirstOrDefault(candidate =>
+                    candidate.ProductId.Equals(productCode, StringComparison.OrdinalIgnoreCase));
+                if (product is null)
+                {
+                    response = Reject(eventCode, "product_not_found", $"product_code {productCode} does not exist in the active order.");
+                }
+                else
+                {
+                    previousSource = NormalizeSource(product.QuantityUpdateSource);
+                    if (!previousSource.Equals(source, StringComparison.OrdinalIgnoreCase))
+                    {
+                        var latestRaw = await repository.GetLatestRawIntervalAsync(machine, token);
+                        if (previousSource == QuantityUpdateSources.Oee && source == QuantityUpdateSources.Oi)
+                        {
+                            AccumulateCurrentOeeSegment(product, context, latestRaw, processedAt);
+                        }
+                        else if (previousSource == QuantityUpdateSources.Oi && source == QuantityUpdateSources.Oee)
+                        {
+                            SeedOeeBaseline(product, latestRaw, processedAt);
+                        }
+
+                        product.QuantityUpdateSource = source;
+                        context.ProductsJson = JsonSerializer.Serialize(products, JsonOptions);
+                        context.UpdatedAt = processedAt;
+                        await repository.SaveProductionContextAsync(context, token);
+                        await repository.RemovePendingQuantityOutboxMessagesAsync(machine, orderId, context.SessionId, token);
+                        if (source == QuantityUpdateSources.Oi)
+                        {
+                            await repository.RemoveOpenProductionMetricsAsync(machine, orderId, context.SessionId, token);
+                        }
+
+                        var cachedContext = context;
+                        repository.AfterCommit(() => productionContextCache.Upsert(cachedContext));
+                    }
+
+                    response = new ProductionQuantitySourceResponse(eventCode, true);
+                }
+            }
+
+            await repository.SaveProductionQuantitySourceEventAsync(new ProductionQuantitySourceEvent
+            {
+                EventCode = eventCode,
+                RequestHash = requestHash,
+                GatewayId = request.GatewayId?.Trim() ?? string.Empty,
+                RequestCreatedAt = request.CreatedAt,
+                Machine = machine,
+                OrderId = orderId,
+                SessionId = context?.SessionId,
+                ProductCode = productCode,
+                PreviousSource = previousSource,
+                QuantityUpdateSource = source,
+                Accepted = response.Accepted,
+                ErrorCode = response.Error?.Code,
+                ErrorMessage = response.Error?.Message,
+                ProcessedAt = processedAt
+            }, token);
+
+            logger.LogInformation(
+                "Production quantity source event handled. EventCode={EventCode}, Machine={Machine}, OrderId={OrderId}, ProductCode={ProductCode}, Source={Source}, Accepted={Accepted}, ErrorCode={ErrorCode}",
+                eventCode,
+                machine,
+                orderId,
+                productCode,
+                source,
+                response.Accepted,
+                response.Error?.Code);
+            return response;
+        }, cancellationToken);
+    }
+
+    private static void AccumulateCurrentOeeSegment(
+        OeeProductDefinition product,
+        ProductionContext context,
+        PlcRawInterval? raw,
+        long endedAt)
+    {
+        if (raw is null)
+        {
+            return;
+        }
+
+        var baselineOk = product.OeeBaselineShotOkTotal ??
+            (context.BaselineCapturedAt > 0 ? context.BaselineShotOkTotal : raw.ShotOkTotal);
+        var baselineNg = product.OeeBaselineShotNgTotal ??
+            (context.BaselineCapturedAt > 0 ? context.BaselineShotNgTotal : raw.ShotNgTotal);
+        if (raw.ShotOkTotal >= baselineOk)
+        {
+            product.OeeAccumulatedShotOk += raw.ShotOkTotal - baselineOk;
+        }
+
+        if (raw.ShotNgTotal >= baselineNg)
+        {
+            product.OeeAccumulatedShotNg += raw.ShotNgTotal - baselineNg;
+        }
+
+        product.OeeAccumulatedRunTimeSec += DeltaOrZero(
+            raw.RunTimeTotalSec,
+            product.OeeBaselineRunTimeTotalSec ?? context.BaselineRunTimeTotalSec);
+        product.OeeAccumulatedStopTimeSec += DeltaOrZero(
+            raw.StopTimeTotalSec,
+            product.OeeBaselineStopTimeTotalSec ?? context.BaselineStopTimeTotalSec);
+        product.OeeAccumulatedErrorTimeSec += DeltaOrZero(
+            raw.ErrorTimeTotalSec,
+            product.OeeBaselineErrorTimeTotalSec ?? context.BaselineErrorTimeTotalSec);
+        product.OeeAccumulatedProductionTimeSec += Math.Max(
+            0,
+            endedAt - (product.OeeSegmentStartedAt ?? context.ActivePeriodStartAt));
+
+        product.OeeBaselineShotOkTotal = raw.ShotOkTotal;
+        product.OeeBaselineShotNgTotal = raw.ShotNgTotal;
+        product.OeeBaselineCapturedAt = raw.ReadAt;
+        product.OeeBaselineRunTimeTotalSec = raw.RunTimeTotalSec;
+        product.OeeBaselineStopTimeTotalSec = raw.StopTimeTotalSec;
+        product.OeeBaselineErrorTimeTotalSec = raw.ErrorTimeTotalSec;
+        product.OeeSegmentStartedAt = null;
+    }
+
+    private static void SeedOeeBaseline(OeeProductDefinition product, PlcRawInterval? raw, long resumedAt)
+    {
+        product.OeeBaselineShotOkTotal = raw?.ShotOkTotal;
+        product.OeeBaselineShotNgTotal = raw?.ShotNgTotal;
+        product.OeeBaselineCapturedAt = raw?.ReadAt;
+        product.OeeBaselineRunTimeTotalSec = raw?.RunTimeTotalSec;
+        product.OeeBaselineStopTimeTotalSec = raw?.StopTimeTotalSec;
+        product.OeeBaselineErrorTimeTotalSec = raw?.ErrorTimeTotalSec;
+        product.OeeSegmentStartedAt = resumedAt;
+        product.OeeResumedAt = resumedAt;
+    }
+
+    private static long DeltaOrZero(long current, long baseline) => Math.Max(0, current - baseline);
+
+    private static IReadOnlyList<OeeProductDefinition> ReadProducts(string productsJson)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<List<OeeProductDefinition>>(productsJson, JsonOptions) ?? [];
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
+
+    private static string NormalizeSource(string? source) =>
+        QuantityUpdateSources.TryNormalize(source, out var normalized) ? normalized : QuantityUpdateSources.Oee;
+
+    private static string BuildRequestHash(string machine, string orderId, string productCode, string source)
+    {
+        var canonical = $"{machine.Trim().ToUpperInvariant()}|{orderId.Trim().ToUpperInvariant()}|{productCode.Trim().ToUpperInvariant()}|{source.Trim().ToLowerInvariant()}";
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
+    }
+
+    private static ProductionQuantitySourceResponse ToResponse(ProductionQuantitySourceEvent sourceEvent) =>
+        new(
+            sourceEvent.EventCode,
+            sourceEvent.Accepted,
+            sourceEvent.Accepted
+                ? null
+                : new ProductionQuantitySourceError(
+                    sourceEvent.ErrorCode ?? "rejected",
+                    sourceEvent.ErrorMessage ?? "The event was rejected."));
+
+    private static ProductionQuantitySourceResponse Reject(string eventCode, string code, string message) =>
+        new(eventCode, false, new ProductionQuantitySourceError(code, message));
 }
 
 public sealed class RealtimeSnapshotBuilder(
@@ -566,6 +859,7 @@ public sealed class RealtimeSnapshotBuilder(
                 if (context.BaselineCapturedAt <= 0)
                 {
                     SeedBaseline(context, effectiveRaw, createdAt);
+                    SeedProductBaselines(context, effectiveRaw);
                     await repository.SaveProductionContextAsync(context, cancellationToken);
                     productionContextCache.Upsert(context);
                     items.Add(CreateEmptyContextItem(context, state));
@@ -580,7 +874,7 @@ public sealed class RealtimeSnapshotBuilder(
         }
 
         return new RealtimeSnapshotBuildResult(
-            new RealtimeSnapshotBatchPayload(2, gatewayId, createdAt, items),
+            new RealtimeSnapshotBatchPayload(3, gatewayId, createdAt, items),
             rawIntervals.Count,
             skipped);
     }
@@ -592,11 +886,22 @@ public sealed class RealtimeSnapshotBuilder(
         string state)
     {
         var product = ReadPrimaryProduct(context.ProductsJson);
-        var goodQty = DeltaOrZero(raw.ShotOkTotal, context.BaselineShotOkTotal);
-        var ngQty = DeltaOrZero(raw.ShotNgTotal, context.BaselineShotNgTotal);
-        var runTime = DeltaOrZero(raw.RunTimeTotalSec, context.BaselineRunTimeTotalSec);
-        var productionTime = Math.Max(0, metricAt - context.ActivePeriodStartAt);
-        var shotQty = checked(goodQty + ngQty);
+        if (!product.IsOeeQuantitySource)
+        {
+            return CreateOiContextItem(context, product, state);
+        }
+
+        var baselineShotOk = product.OeeBaselineShotOkTotal ?? context.BaselineShotOkTotal;
+        var baselineShotNg = product.OeeBaselineShotNgTotal ?? context.BaselineShotNgTotal;
+        var goodShots = product.OeeAccumulatedShotOk + DeltaOrZero(raw.ShotOkTotal, baselineShotOk);
+        var ngShots = product.OeeAccumulatedShotNg + DeltaOrZero(raw.ShotNgTotal, baselineShotNg);
+        var runTime = product.OeeAccumulatedRunTimeSec + DeltaOrZero(
+            raw.RunTimeTotalSec,
+            product.OeeBaselineRunTimeTotalSec ?? context.BaselineRunTimeTotalSec);
+        var productionTime = product.OeeAccumulatedProductionTimeSec + Math.Max(
+            0,
+            metricAt - (product.OeeSegmentStartedAt ?? context.ActivePeriodStartAt));
+        var shotQty = checked(goodShots + ngShots);
         var actualQty = OeeQuantityCalculator.FromShotCount(shotQty, product.Gain);
         var cycleTimeSeconds = product.EffectiveCycleTime > 0
             ? product.EffectiveCycleTime
@@ -606,7 +911,7 @@ public sealed class RealtimeSnapshotBuilder(
             : 0m;
         var availability = Percent(runTime, productionTime);
         var performance = plannedQty > 0 ? Percent(actualQty, plannedQty) : 0m;
-        var quality = shotQty > 0 ? Percent(goodQty, shotQty) : 0m;
+        var quality = shotQty > 0 ? Percent(goodShots, shotQty) : 0m;
         var oee = Decimal.Round(availability * performance * quality / 10000m, 6);
         var totalQty = orderQuantityCache.GetCompletedQty(raw.Machine, context.OrderId) + actualQty;
 
@@ -630,6 +935,11 @@ public sealed class RealtimeSnapshotBuilder(
     private RealtimeSnapshotItemPayload CreateEmptyContextItem(ProductionContext context, string state)
     {
         var product = ReadPrimaryProduct(context.ProductsJson);
+        if (!product.IsOeeQuantitySource)
+        {
+            return CreateOiContextItem(context, product, state);
+        }
+
         return new RealtimeSnapshotItemPayload(
             context.Machine,
             context.OrderId,
@@ -646,6 +956,26 @@ public sealed class RealtimeSnapshotBuilder(
             0,
             EmptyExtra());
     }
+
+    private static RealtimeSnapshotItemPayload CreateOiContextItem(
+        ProductionContext context,
+        OeeProductDefinition product,
+        string state) =>
+        new(
+            context.Machine,
+            context.OrderId,
+            context.SessionId,
+            product.ProductId,
+            product.MoldCode,
+            state,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            EmptyExtra());
 
     private static RealtimeSnapshotItemPayload CreateNoContextItem(string machineCode, string state) =>
         new(
@@ -675,6 +1005,30 @@ public sealed class RealtimeSnapshotBuilder(
         context.BaselineErrorTimeTotalSec = raw.ErrorTimeTotalSec;
         context.BaselineCycleTimeMs = raw.CycleTimeMs;
         context.UpdatedAt = updatedAt;
+    }
+
+    private static void SeedProductBaselines(ProductionContext context, PlcRawInterval raw)
+    {
+        try
+        {
+            var products = JsonSerializer.Deserialize<List<OeeProductDefinition>>(context.ProductsJson, JsonOptions) ?? [];
+            foreach (var product in products.Where(product => product.IsOeeQuantitySource))
+            {
+                product.OeeBaselineShotOkTotal ??= raw.ShotOkTotal;
+                product.OeeBaselineShotNgTotal ??= raw.ShotNgTotal;
+                product.OeeBaselineCapturedAt ??= raw.ReadAt;
+                product.OeeBaselineRunTimeTotalSec ??= raw.RunTimeTotalSec;
+                product.OeeBaselineStopTimeTotalSec ??= raw.StopTimeTotalSec;
+                product.OeeBaselineErrorTimeTotalSec ??= raw.ErrorTimeTotalSec;
+                product.OeeSegmentStartedAt ??= context.ActivePeriodStartAt;
+            }
+
+            context.ProductsJson = JsonSerializer.Serialize(products, JsonOptions);
+        }
+        catch (JsonException)
+        {
+            // Keep legacy product JSON unchanged; context baseline remains the fallback.
+        }
     }
 
     private static long DeltaOrZero(long current, long baseline) => Math.Max(0, current - baseline);
@@ -1057,6 +1411,15 @@ public sealed class ProductionMetricBuilder(
                 }
 
                 var product = ReadPrimaryProduct(context.ProductsJson);
+                if (!product.IsOeeQuantitySource)
+                {
+                    skipped++;
+                    continue;
+                }
+
+                var sessionProductionTime = product.OeeAccumulatedProductionTimeSec + Math.Max(
+                    0,
+                    createdAt - (product.OeeSegmentStartedAt ?? context.ActivePeriodStartAt));
                 var sessionMetric = TryBuildMetric(
                     gatewayId,
                     "session",
@@ -1066,12 +1429,18 @@ public sealed class ProductionMetricBuilder(
                     context,
                     product,
                     raw,
-                    context.BaselineShotOkTotal,
-                    context.BaselineShotNgTotal,
-                    context.BaselineRunTimeTotalSec,
-                    context.BaselineStopTimeTotalSec,
-                    context.BaselineErrorTimeTotalSec,
-                    createdAt);
+                    product.OeeBaselineShotOkTotal ?? context.BaselineShotOkTotal,
+                    product.OeeBaselineShotNgTotal ?? context.BaselineShotNgTotal,
+                    product.OeeBaselineRunTimeTotalSec ?? context.BaselineRunTimeTotalSec,
+                    product.OeeBaselineStopTimeTotalSec ?? context.BaselineStopTimeTotalSec,
+                    product.OeeBaselineErrorTimeTotalSec ?? context.BaselineErrorTimeTotalSec,
+                    createdAt,
+                    productionTimeOverride: sessionProductionTime,
+                    accumulatedShotOk: product.OeeAccumulatedShotOk,
+                    accumulatedShotNg: product.OeeAccumulatedShotNg,
+                    accumulatedRunTime: product.OeeAccumulatedRunTimeSec,
+                    accumulatedStopTime: product.OeeAccumulatedStopTimeSec,
+                    accumulatedErrorTime: product.OeeAccumulatedErrorTimeSec);
                 if (sessionMetric is not null)
                 {
                     metrics.Add(sessionMetric);
@@ -1149,6 +1518,19 @@ public sealed class ProductionMetricBuilder(
         }
 
         var product = ReadPrimaryProduct(context.ProductsJson);
+        if (!product.IsOeeQuantitySource)
+        {
+            logger.LogInformation(
+                "Final production metric skipped because quantity source is OI. Machine={Machine}, OrderId={OrderId}, SessionId={SessionId}",
+                context.Machine,
+                context.OrderId,
+                context.SessionId);
+            return null;
+        }
+
+        var sessionProductionTime = product.OeeAccumulatedProductionTimeSec + Math.Max(
+            0,
+            stoppedAt - (product.OeeSegmentStartedAt ?? context.ActivePeriodStartAt));
         var metric = TryBuildMetric(
             gatewayId,
             "session",
@@ -1158,12 +1540,18 @@ public sealed class ProductionMetricBuilder(
             context,
             product,
             raw,
-            context.BaselineShotOkTotal,
-            context.BaselineShotNgTotal,
-            context.BaselineRunTimeTotalSec,
-            context.BaselineStopTimeTotalSec,
-            context.BaselineErrorTimeTotalSec,
-            stoppedAt);
+            product.OeeBaselineShotOkTotal ?? context.BaselineShotOkTotal,
+            product.OeeBaselineShotNgTotal ?? context.BaselineShotNgTotal,
+            product.OeeBaselineRunTimeTotalSec ?? context.BaselineRunTimeTotalSec,
+            product.OeeBaselineStopTimeTotalSec ?? context.BaselineStopTimeTotalSec,
+            product.OeeBaselineErrorTimeTotalSec ?? context.BaselineErrorTimeTotalSec,
+            stoppedAt,
+            productionTimeOverride: sessionProductionTime,
+            accumulatedShotOk: product.OeeAccumulatedShotOk,
+            accumulatedShotNg: product.OeeAccumulatedShotNg,
+            accumulatedRunTime: product.OeeAccumulatedRunTimeSec,
+            accumulatedStopTime: product.OeeAccumulatedStopTimeSec,
+            accumulatedErrorTime: product.OeeAccumulatedErrorTimeSec);
 
         if (metric is null)
         {
@@ -1191,6 +1579,11 @@ public sealed class ProductionMetricBuilder(
         var effectiveStart = Math.Max(context.ActivePeriodStartAt, bucketStart);
         var effectiveEnd = Math.Min(createdAt, bucketEnd);
         if (effectiveEnd <= effectiveStart)
+        {
+            return null;
+        }
+
+        if (product.OeeResumedAt is long resumedAt && effectiveStart < resumedAt)
         {
             return null;
         }
@@ -1241,13 +1634,18 @@ public sealed class ProductionMetricBuilder(
         long baselineStopTime,
         long baselineErrorTime,
         long createdAt,
-        long? productionTimeOverride = null)
+        long? productionTimeOverride = null,
+        long accumulatedShotOk = 0,
+        long accumulatedShotNg = 0,
+        long accumulatedRunTime = 0,
+        long accumulatedStopTime = 0,
+        long accumulatedErrorTime = 0)
     {
-        var goodQty = currentRaw.ShotOkTotal - baselineShotOk;
-        var ngQty = currentRaw.ShotNgTotal - baselineShotNg;
-        var runTime = currentRaw.RunTimeTotalSec - baselineRunTime;
-        var stopTime = currentRaw.StopTimeTotalSec - baselineStopTime;
-        var errorTime = currentRaw.ErrorTimeTotalSec - baselineErrorTime;
+        var goodQty = accumulatedShotOk + currentRaw.ShotOkTotal - baselineShotOk;
+        var ngQty = accumulatedShotNg + currentRaw.ShotNgTotal - baselineShotNg;
+        var runTime = accumulatedRunTime + currentRaw.RunTimeTotalSec - baselineRunTime;
+        var stopTime = accumulatedStopTime + currentRaw.StopTimeTotalSec - baselineStopTime;
+        var errorTime = accumulatedErrorTime + currentRaw.ErrorTimeTotalSec - baselineErrorTime;
         if (goodQty < 0 || ngQty < 0 || runTime < 0 || stopTime < 0 || errorTime < 0)
         {
             return null;
@@ -1460,7 +1858,7 @@ public sealed class MesSyncOutboxDispatcher(
         var payload = new JsonObject
         {
             ["schema_version"] = messageList.Any(message =>
-                message.Topic.Equals(SyncOutboxTopics.RealtimeSnapshot, StringComparison.OrdinalIgnoreCase)) ? 2 : 1,
+                message.Topic.Equals(SyncOutboxTopics.RealtimeSnapshot, StringComparison.OrdinalIgnoreCase)) ? 3 : 1,
             ["gateway_id"] = gatewayId,
             ["created_at"] = createdAt,
             ["items"] = items

@@ -48,6 +48,9 @@ public sealed class ProductionCommandRequest
     [JsonPropertyName("production_order_code")]
     public string? ProductionOrderCode { get; init; }
 
+    [JsonPropertyName("quantity_update_source")]
+    public string? QuantityUpdateSource { get; init; }
+
     [JsonPropertyName("products")]
     public IReadOnlyList<ProductionCommandProduct>? Products { get; init; }
 
@@ -83,6 +86,9 @@ public sealed class ProductionCommandItemRequest
 
     [JsonPropertyName("order_id")]
     public string? OrderId { get; init; }
+
+    [JsonPropertyName("quantity_update_source")]
+    public string? QuantityUpdateSource { get; init; }
 
     [JsonPropertyName("products")]
     public IReadOnlyList<ProductionCommandProduct>? Products { get; init; }
@@ -147,14 +153,56 @@ public sealed record RealtimeSnapshotItemPayload(
     [property: JsonPropertyName("product_code")] string? ProductCode,
     [property: JsonPropertyName("mold_code")] string? MoldCode,
     [property: JsonPropertyName("machine_state")] string MachineState,
-    [property: JsonPropertyName("actual_qty")] long ActualQty,
-    [property: JsonPropertyName("total_qty")] long TotalQty,
-    [property: JsonPropertyName("planned_qty")] decimal PlannedQty,
-    [property: JsonPropertyName("availability")] decimal Availability,
-    [property: JsonPropertyName("performance")] decimal Performance,
-    [property: JsonPropertyName("quality")] decimal Quality,
-    [property: JsonPropertyName("oee")] decimal Oee,
+    [property: JsonPropertyName("actual_qty")] long? ActualQty,
+    [property: JsonPropertyName("total_qty")] long? TotalQty,
+    [property: JsonPropertyName("planned_qty")] decimal? PlannedQty,
+    [property: JsonPropertyName("availability")] decimal? Availability,
+    [property: JsonPropertyName("performance")] decimal? Performance,
+    [property: JsonPropertyName("quality")] decimal? Quality,
+    [property: JsonPropertyName("oee")] decimal? Oee,
     [property: JsonPropertyName("extra")] JsonElement Extra);
+
+public sealed class ProductionQuantitySourceBatchRequest
+{
+    [JsonPropertyName("schema_version")]
+    public int SchemaVersion { get; init; } = 1;
+
+    [JsonPropertyName("gateway_id")]
+    public string GatewayId { get; init; } = string.Empty;
+
+    [JsonPropertyName("created_at")]
+    public long CreatedAt { get; init; }
+
+    [JsonPropertyName("items")]
+    public IReadOnlyList<ProductionQuantitySourceItemRequest>? Items { get; init; }
+}
+
+public sealed class ProductionQuantitySourceItemRequest
+{
+    [JsonPropertyName("event_code")]
+    public string EventCode { get; init; } = string.Empty;
+
+    [JsonPropertyName("machine_code")]
+    public string MachineCode { get; init; } = string.Empty;
+
+    [JsonPropertyName("order_id")]
+    public string OrderId { get; init; } = string.Empty;
+
+    [JsonPropertyName("product_code")]
+    public string ProductCode { get; init; } = string.Empty;
+
+    [JsonPropertyName("quantity_update_source")]
+    public string QuantityUpdateSource { get; init; } = string.Empty;
+}
+
+public sealed record ProductionQuantitySourceError(
+    [property: JsonPropertyName("code")] string Code,
+    [property: JsonPropertyName("message")] string Message);
+
+public sealed record ProductionQuantitySourceResponse(
+    [property: JsonPropertyName("event_code")] string EventCode,
+    [property: JsonPropertyName("accepted")] bool Accepted,
+    [property: JsonPropertyName("error")] ProductionQuantitySourceError? Error = null);
 
 public sealed record RealtimeSnapshotBuildResult(
     RealtimeSnapshotBatchPayload Payload,
@@ -235,6 +283,13 @@ public interface IProductionCommandService
     // The schedule runner owns the OEE gate and transaction, including the execution record.
     Task<Rostek.Gateway.Application.Scheduling.ProductionRotationResult> RotateActiveSessionsAsync(
         string gatewayId, string machineCode, long executedAt, CancellationToken cancellationToken);
+}
+
+public interface IProductionQuantitySourceService
+{
+    Task<ProductionQuantitySourceResponse> HandleAsync(
+        ProductionQuantitySourceBatchRequest request,
+        CancellationToken cancellationToken);
 }
 
 public interface IRealtimeSnapshotBuilder

@@ -15,6 +15,8 @@ public interface IOeeLocalRepository
     Task<ProductionContext> EnsureTestProductionContextAsync(string machine, long startAt, CancellationToken cancellationToken);
     Task SaveProductionContextAsync(ProductionContext context, CancellationToken cancellationToken);
     Task DeleteProductionContextAsync(string sessionId, CancellationToken cancellationToken);
+    Task<ProductionQuantitySourceEvent?> GetProductionQuantitySourceEventAsync(string eventCode, CancellationToken cancellationToken);
+    Task SaveProductionQuantitySourceEventAsync(ProductionQuantitySourceEvent sourceEvent, CancellationToken cancellationToken);
     Task<ProductionPeriod?> GetProductionPeriodAsync(string periodId, CancellationToken cancellationToken);
     Task<ProductionPeriod> EnsureProductionPeriodAsync(ProductionContext context, long startAt, CancellationToken cancellationToken);
     Task<int> GetNextPlcPeriodIndexAsync(string machine, string orderId, CancellationToken cancellationToken);
@@ -41,6 +43,7 @@ public interface IOeeLocalRepository
     Task<IReadOnlyList<PlcRawInterval>> InsertMissingRawIntervalsAsync(IReadOnlyCollection<PlcRawInterval> rawIntervals, CancellationToken cancellationToken);
     Task UpsertProductionMetricsAsync(IReadOnlyCollection<ProductionMetric> metrics, CancellationToken cancellationToken);
     Task<IReadOnlyList<ProductionMetric>> ListFinalSessionProductionMetricsAsync(CancellationToken cancellationToken);
+    Task RemoveOpenProductionMetricsAsync(string machine, string orderId, string sessionId, CancellationToken cancellationToken);
     Task<MachineStateEvent?> GetOpenMachineStateEventAsync(string machine, string orderId, string sessionId, CancellationToken cancellationToken);
     async Task<IReadOnlyDictionary<string, MachineStateEvent>> GetOpenMachineStateEventsAsync(
         IReadOnlyCollection<string> sessionIds,
@@ -75,6 +78,7 @@ public interface IOeeLocalRepository
         }
     }
     Task RemoveStaleRealtimeSnapshotMessagesAsync(IReadOnlyCollection<string> retainedDedupeKeys, CancellationToken cancellationToken);
+    Task RemovePendingQuantityOutboxMessagesAsync(string machine, string orderId, string sessionId, CancellationToken cancellationToken);
     Task<IReadOnlyList<SyncOutboxMessage>> TakePendingSyncOutboxMessagesAsync(long now, int batchSize, IReadOnlyCollection<string> topics, CancellationToken cancellationToken);
     Task MarkSyncOutboxMessagesSucceededAsync(IReadOnlyCollection<SyncOutboxMessage> dispatchedMessages, long syncedAt, CancellationToken cancellationToken);
     Task MarkSyncOutboxMessagesFailedAsync(IReadOnlyCollection<SyncOutboxMessage> dispatchedMessages, string error, long nextAttemptAt, CancellationToken cancellationToken);

@@ -1,6 +1,7 @@
 using Rostek.Gateway.Application.Oee;
 using Rostek.Gateway.Application.MesSync;
 using Rostek.Gateway.Domain.Entities;
+using System.Text.Json;
 
 namespace Rostek.Gateway.UnitTests.Support;
 
@@ -12,6 +13,7 @@ public sealed class InMemoryOeeLocalRepository : IOeeLocalRepository
     public List<MachineStateEvent> MachineStateEvents { get; } = [];
     public List<SyncOutboxMessage> SyncOutboxMessages { get; } = [];
     public List<ProductionMetric> ProductionMetrics { get; } = [];
+    public List<ProductionQuantitySourceEvent> ProductionQuantitySourceEvents { get; } = [];
 
     public Task<ProductionContext?> GetProductionContextAsync(string sessionId, CancellationToken cancellationToken) =>
         Task.FromResult(Contexts.FirstOrDefault(context => context.SessionId.Equals(sessionId, StringComparison.OrdinalIgnoreCase)));
@@ -79,6 +81,25 @@ public sealed class InMemoryOeeLocalRepository : IOeeLocalRepository
     public Task DeleteProductionContextAsync(string sessionId, CancellationToken cancellationToken)
     {
         Contexts.RemoveAll(item => item.SessionId.Equals(sessionId, StringComparison.OrdinalIgnoreCase));
+        return Task.CompletedTask;
+    }
+
+    public Task<ProductionQuantitySourceEvent?> GetProductionQuantitySourceEventAsync(
+        string eventCode,
+        CancellationToken cancellationToken) =>
+        Task.FromResult(ProductionQuantitySourceEvents.FirstOrDefault(item =>
+            item.EventCode.Equals(eventCode, StringComparison.OrdinalIgnoreCase)));
+
+    public Task SaveProductionQuantitySourceEventAsync(
+        ProductionQuantitySourceEvent sourceEvent,
+        CancellationToken cancellationToken)
+    {
+        if (!ProductionQuantitySourceEvents.Any(item =>
+                item.EventCode.Equals(sourceEvent.EventCode, StringComparison.OrdinalIgnoreCase)))
+        {
+            ProductionQuantitySourceEvents.Add(sourceEvent);
+        }
+
         return Task.CompletedTask;
     }
 
@@ -194,6 +215,21 @@ public sealed class InMemoryOeeLocalRepository : IOeeLocalRepository
             .ThenBy(metric => metric.SessionId, StringComparer.OrdinalIgnoreCase)
             .ToList());
 
+    public Task RemoveOpenProductionMetricsAsync(
+        string machine,
+        string orderId,
+        string sessionId,
+        CancellationToken cancellationToken)
+    {
+        ProductionMetrics.RemoveAll(metric =>
+            metric.Machine.Equals(machine, StringComparison.OrdinalIgnoreCase) &&
+            metric.OrderId.Equals(orderId, StringComparison.OrdinalIgnoreCase) &&
+            !metric.IsFinal &&
+            (string.Equals(metric.SessionId, sessionId, StringComparison.OrdinalIgnoreCase) ||
+                metric.BucketType.Equals("order", StringComparison.OrdinalIgnoreCase)));
+        return Task.CompletedTask;
+    }
+
     public Task<MachineStateEvent?> GetOpenMachineStateEventAsync(
         string machine,
         string orderId,
@@ -267,6 +303,39 @@ public sealed class InMemoryOeeLocalRepository : IOeeLocalRepository
             message.Status is SyncOutboxStatuses.Pending or SyncOutboxStatuses.Failed &&
             !retained.Contains(message.DedupeKey));
         return Task.CompletedTask;
+    }
+
+    public Task RemovePendingQuantityOutboxMessagesAsync(
+        string machine,
+        string orderId,
+        string sessionId,
+        CancellationToken cancellationToken)
+    {
+        SyncOutboxMessages.RemoveAll(message =>
+            message.Status is SyncOutboxStatuses.Pending or SyncOutboxStatuses.Failed &&
+            (message.Topic == SyncOutboxTopics.RealtimeSnapshot
+                ? message.DedupeKey.Equals(
+                    $"realtime_snapshot:{machine}:{orderId}:{sessionId}",
+                    StringComparison.OrdinalIgnoreCase)
+                : message.Topic == SyncOutboxTopics.ProductionMetric &&
+                    PayloadMatchesOrder(message.PayloadJson, machine, orderId)));
+        return Task.CompletedTask;
+    }
+
+    private static bool PayloadMatchesOrder(string payloadJson, string machine, string orderId)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(payloadJson);
+            return document.RootElement.TryGetProperty("machine_code", out var machineElement) &&
+                document.RootElement.TryGetProperty("order_id", out var orderElement) &&
+                string.Equals(machineElement.GetString(), machine, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(orderElement.GetString(), orderId, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     public Task<IReadOnlyList<SyncOutboxMessage>> TakePendingSyncOutboxMessagesAsync(

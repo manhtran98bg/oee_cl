@@ -50,6 +50,7 @@ Content-Type: application/json
       "machine_code": "M16-01",
       "action": "start",
       "order_id": "LSX-001",
+      "quantity_update_source": "oee",
       "products": [
         {
           "product_code": "SP-001",
@@ -77,6 +78,7 @@ Content-Type: application/json
       "machine_code": "M16-01",
       "action": "start",
       "order_id": "LSX-001",
+      "quantity_update_source": "oee",
       "products": [
         {
           "product_code": "SP-001",
@@ -92,6 +94,7 @@ Content-Type: application/json
       "machine_code": "M16-01",
       "action": "start",
       "order_id": "LSX-002",
+      "quantity_update_source": "oee",
       "products": [
         {
           "product_code": "SP-002",
@@ -161,6 +164,7 @@ Item schema:
 | `machine_code` | string | yes | Mã máy, phải tồn tại trong cấu hình Gateway. |
 | `action` | string | yes | `start`, `pause`, hoặc `stop`. |
 | `order_id` | string | yes | Mã lệnh sản xuất. |
+| `quantity_update_source` | string | required for `start` | `oee` để Gateway tính sản lượng/OEE; `oi` để OI quản lý sản lượng và Gateway không tính metric. Áp dụng ban đầu cho toàn bộ sản phẩm trong command. |
 | `products` | array | required for `start` | Danh sách sản phẩm của lệnh. |
 
 Product schema:
@@ -237,7 +241,7 @@ Content-Type: application/json
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "gateway_id": "GW-M16-01",
   "created_at": 1788750000,
   "items": [
@@ -265,7 +269,7 @@ Máy enabled nhưng chưa có production order vẫn được gửi để MES da
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "gateway_id": "GW-M16-01",
   "created_at": 1788750000,
   "items": [
@@ -289,11 +293,40 @@ Máy enabled nhưng chưa có production order vẫn được gửi để MES da
 }
 ```
 
+Session có `quantity_update_source = "oi"` vẫn gửi identity và trạng thái máy,
+nhưng không gửi số liệu do Gateway tính:
+
+```json
+{
+  "schema_version": 3,
+  "gateway_id": "GW-M16-01",
+  "created_at": 1788750000,
+  "items": [
+    {
+      "machine_code": "M16-01",
+      "order_id": "LSX-001",
+      "session_id": "M16-01-LSX-001-1788750000",
+      "product_code": "SP-001",
+      "mold_code": "KHUON-001",
+      "machine_state": "run",
+      "actual_qty": null,
+      "total_qty": null,
+      "planned_qty": null,
+      "availability": null,
+      "performance": null,
+      "quality": null,
+      "oee": null,
+      "extra": {}
+    }
+  ]
+}
+```
+
 ### 3.2 Sync Payload Schema
 
 | Field | Type | Required | Description |
 |---|---:|---:|---|
-| `schema_version` | integer | yes | Version realtime payload. Hiện tại là `2`. |
+| `schema_version` | integer | yes | Version realtime payload. Hiện tại là `3`. |
 | `gateway_id` | string | yes | Mã Gateway gửi dữ liệu. |
 | `created_at` | integer | yes | Unix seconds, thời điểm Gateway build payload. |
 | `items` | array | yes | Danh sách realtime snapshot. |
@@ -308,14 +341,17 @@ Item schema:
 | `product_code` | string/null | no | Mã sản phẩm chính; `null` khi máy chưa có production context. |
 | `mold_code` | string/null | no | Mã khuôn. |
 | `machine_state` | string | yes | `run`, `stop`, `error`, `disconnect`. |
-| `actual_qty` | integer | yes | Sản lượng hiện tại của session: `(shot_ok_delta + shot_ng_delta) × cavity`. |
-| `total_qty` | integer | yes | Tổng `actual_qty` của order, gồm các session đã hoàn thành và session hiện tại. |
-| `planned_qty` | number | yes | Sản lượng theo kế hoạch của session. |
-| `availability` | number | yes | A, phần trăm `0..100`. |
-| `performance` | number | yes | P, phần trăm `0..100`. |
-| `quality` | number | yes | Q, phần trăm `0..100`. |
-| `oee` | number | yes | OEE, phần trăm `0..100`. |
+| `actual_qty` | integer/null | yes | Sản lượng hiện tại của session: `(shot_ok_delta + shot_ng_delta) × cavity`; `null` khi nguồn là `oi`. |
+| `total_qty` | integer/null | yes | Tổng `actual_qty` của order; `null` khi nguồn là `oi`. |
+| `planned_qty` | number/null | yes | Sản lượng theo kế hoạch của session; `null` khi nguồn là `oi`. |
+| `availability` | number/null | yes | A, phần trăm `0..100`; `null` khi nguồn là `oi`. |
+| `performance` | number/null | yes | P, phần trăm `0..100`; `null` khi nguồn là `oi`. |
+| `quality` | number/null | yes | Q, phần trăm `0..100`; `null` khi nguồn là `oi`. |
+| `oee` | number/null | yes | OEE, phần trăm `0..100`; `null` khi nguồn là `oi`. |
 | `extra` | object | yes | Hiện tại Gateway gửi `{}`. |
+
+Realtime outbound không có field `quantity_update_source`. MES biết nguồn từ
+production command/source event đã gửi xuống Gateway.
 
 Quy tắc hiển thị:
 

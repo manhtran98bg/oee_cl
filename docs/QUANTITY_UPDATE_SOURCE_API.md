@@ -17,9 +17,31 @@ MES gọi API khi người dùng thay đổi trường `quantity_update_source` 
 lệnh sản xuất Odoo. API này **không** được gọi khi người dùng đổi trạng thái
 lệnh từ giao diện OI.
 
-Luồng đổi trạng thái OI vẫn dùng endpoint `production-commands` hiện có. Mỗi
-command `start`, `pause` hoặc `stop` chỉ được bổ sung field
-`quantity_update_source` trong payload của command.
+Luồng đổi trạng thái OI vẫn dùng endpoint `production-commands` hiện có.
+Command `start` bắt buộc có field `quantity_update_source` ở cấp command item.
+Giá trị này được áp dụng ban đầu cho toàn bộ sản phẩm trong command. `pause` và
+`stop` không cần gửi field này.
+
+Ví dụ phần item của command `start`:
+
+```json
+{
+  "command_code": "CMD-20261020-0001",
+  "machine_code": "2-20",
+  "action": "start",
+  "order_id": "LSX-202609-00031",
+  "quantity_update_source": "oee",
+  "products": [
+    {
+      "product_code": "CL1814-PLS-0104",
+      "mold_code": "KHUON-001",
+      "cavity": 4,
+      "cycle_time": 16.0,
+      "target_qty": 10000
+    }
+  ]
+}
+```
 
 ## Endpoint
 
@@ -133,3 +155,16 @@ không được lưu tại MES.
   tại, để người dùng Odoo biết cách xử lý.
 - Gateway có thể ghi nhận `gateway_id` và `created_at` để audit, nhưng các field
   này không ảnh hưởng điều kiện Odoo chấp nhận response.
+
+## Hành vi theo nguồn
+
+- `oee`: Gateway tính realtime OEE và production metrics như bình thường.
+- `oi`: Gateway vẫn lưu raw PLC, production context và machine state event,
+  nhưng không tính hoặc lưu production metrics.
+- Realtime snapshot của một session dùng `oi` vẫn gửi mã máy, order, session,
+  product, mold và trạng thái máy; các field quantity/A/P/Q/OEE là `null`.
+- Khi chuyển `oee -> oi`, Gateway chốt phần số đếm/timer OEE đã tích luỹ trong
+  production context rồi dừng tính metric.
+- Khi chuyển `oi -> oee`, Gateway lấy raw mới nhất làm baseline mới; khoảng thời
+  gian dùng OI không được cộng vào OEE tự động.
+- Payload Gateway gửi lên MES không có field `quantity_update_source`.

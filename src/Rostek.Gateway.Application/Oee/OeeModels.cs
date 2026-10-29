@@ -42,6 +42,18 @@ public static class OeeRunStates
         state.Equals(Error, StringComparison.OrdinalIgnoreCase);
 }
 
+public static class QuantityUpdateSources
+{
+    public const string Oi = "oi";
+    public const string Oee = "oee";
+
+    public static bool TryNormalize(string? value, out string source)
+    {
+        source = value?.Trim().ToLowerInvariant() ?? string.Empty;
+        return source is Oi or Oee;
+    }
+}
+
 public sealed class OeeProductDefinition
 {
     [JsonPropertyName("product_id")]
@@ -65,11 +77,60 @@ public sealed class OeeProductDefinition
     [JsonPropertyName("target")]
     public int Target { get; init; }
 
+    [JsonPropertyName("quantity_update_source")]
+    public string QuantityUpdateSource { get; set; } = QuantityUpdateSources.Oee;
+
+    [JsonPropertyName("oee_accumulated_shot_ok")]
+    public long OeeAccumulatedShotOk { get; set; }
+
+    [JsonPropertyName("oee_accumulated_shot_ng")]
+    public long OeeAccumulatedShotNg { get; set; }
+
+    [JsonPropertyName("oee_accumulated_run_time_sec")]
+    public long OeeAccumulatedRunTimeSec { get; set; }
+
+    [JsonPropertyName("oee_accumulated_stop_time_sec")]
+    public long OeeAccumulatedStopTimeSec { get; set; }
+
+    [JsonPropertyName("oee_accumulated_error_time_sec")]
+    public long OeeAccumulatedErrorTimeSec { get; set; }
+
+    [JsonPropertyName("oee_accumulated_production_time_sec")]
+    public long OeeAccumulatedProductionTimeSec { get; set; }
+
+    [JsonPropertyName("oee_baseline_shot_ok_total")]
+    public long? OeeBaselineShotOkTotal { get; set; }
+
+    [JsonPropertyName("oee_baseline_shot_ng_total")]
+    public long? OeeBaselineShotNgTotal { get; set; }
+
+    [JsonPropertyName("oee_baseline_captured_at")]
+    public long? OeeBaselineCapturedAt { get; set; }
+
+    [JsonPropertyName("oee_baseline_run_time_total_sec")]
+    public long? OeeBaselineRunTimeTotalSec { get; set; }
+
+    [JsonPropertyName("oee_baseline_stop_time_total_sec")]
+    public long? OeeBaselineStopTimeTotalSec { get; set; }
+
+    [JsonPropertyName("oee_baseline_error_time_total_sec")]
+    public long? OeeBaselineErrorTimeTotalSec { get; set; }
+
+    [JsonPropertyName("oee_segment_started_at")]
+    public long? OeeSegmentStartedAt { get; set; }
+
+    [JsonPropertyName("oee_resumed_at")]
+    public long? OeeResumedAt { get; set; }
+
     [JsonPropertyName("extra")]
     public JsonElement? Extra { get; init; }
 
     [JsonIgnore]
     public decimal EffectiveCycleTime => CycleTime > 0 ? CycleTime : LegacyCycle;
+
+    [JsonIgnore]
+    public bool IsOeeQuantitySource =>
+        !QuantityUpdateSource.Equals(QuantityUpdateSources.Oi, StringComparison.OrdinalIgnoreCase);
 }
 
 public interface IRawDataCaptureService

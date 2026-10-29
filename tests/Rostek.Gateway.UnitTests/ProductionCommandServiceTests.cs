@@ -277,6 +277,37 @@ public sealed class ProductionCommandServiceTests
         Assert.Contains(response.Items, item => !item.Accepted && item.MachineCode == "M16-99");
     }
 
+    [Fact]
+    public async Task Start_requires_quantity_update_source()
+    {
+        var service = CreateService();
+
+        var response = await service.HandleBatchAsync(
+            Batch(100, [StartItem("CMD-001", "M16-01", "MO-001", "SP-001", 16m, source: null)]),
+            CancellationToken.None);
+
+        Assert.False(response.Accepted);
+        Assert.Contains("quantity_update_source", Assert.Single(response.Items).Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Stop_oi_session_does_not_create_final_production_metric()
+    {
+        var repository = new InMemoryOeeLocalRepository();
+        var service = CreateService(repository);
+        await service.HandleBatchAsync(
+            Batch(100, [StartItem("CMD-001", "M16-01", "MO-001", "SP-001", 16m, QuantityUpdateSources.Oi)]),
+            CancellationToken.None);
+
+        var response = await service.HandleBatchAsync(
+            Batch(120, [CommandItem("CMD-002", "M16-01", "stop", "MO-001")]),
+            CancellationToken.None);
+
+        Assert.True(response.Accepted);
+        Assert.Empty(repository.ProductionMetrics);
+        Assert.DoesNotContain(repository.SyncOutboxMessages, item => item.Topic == SyncOutboxTopics.ProductionMetric);
+    }
+
     private static ProductionCommandService CreateService(
         InMemoryOeeLocalRepository? repository = null,
         ProductionContextCache? cache = null,
@@ -307,13 +338,20 @@ public sealed class ProductionCommandServiceTests
             Items = items
         };
 
-    private static ProductionCommandItemRequest StartItem(string commandCode, string machine, string orderId, string productCode, decimal cycleTime) =>
+    private static ProductionCommandItemRequest StartItem(
+        string commandCode,
+        string machine,
+        string orderId,
+        string productCode,
+        decimal cycleTime,
+        string? source = QuantityUpdateSources.Oee) =>
         new()
         {
             CommandCode = commandCode,
             MachineCode = machine,
             Action = "start",
             OrderId = orderId,
+            QuantityUpdateSource = source,
             Products =
             [
                 new ProductionCommandProduct

@@ -22,7 +22,7 @@ public sealed class RealtimeSnapshotBuilderTests
         var result = await builder.BuildAsync("GW-M16-01", [raw], createdAt: 105, CancellationToken.None);
 
         var item = Assert.Single(result.Payload.Items);
-        Assert.Equal(2, result.Payload.SchemaVersion);
+        Assert.Equal(3, result.Payload.SchemaVersion);
         Assert.Equal("TEST_ORDER", item.OrderId);
         Assert.Equal(0, item.ActualQty);
         Assert.Equal(0, item.PlannedQty);
@@ -185,7 +185,7 @@ public sealed class RealtimeSnapshotBuilderTests
         var raw = Raw(readAt: 110, shotOk: 120, shotNg: 8, runTime: 18, stopTime: 4, errorTime: 2);
         var capture = new StubRawDataCaptureService([raw]);
         var snapshot = new RealtimeSnapshotBuildResult(new RealtimeSnapshotBatchPayload(
-            2,
+            3,
             "GW-M16-01",
             110,
             [new RealtimeSnapshotItemPayload("M16-01", "TEST_ORDER", "SESSION", "SP", null, "run", 1, 1, 1, 10, 100, 100, 10, EmptyExtra())]),

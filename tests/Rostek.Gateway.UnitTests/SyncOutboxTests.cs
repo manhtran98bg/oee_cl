@@ -148,7 +148,7 @@ public sealed class SyncOutboxTests
     }
 
     [Fact]
-    public async Task Dispatcher_uses_schema_version_two_for_realtime_snapshots()
+    public async Task Dispatcher_uses_schema_version_three_for_realtime_snapshots()
     {
         var repository = new InMemoryOeeLocalRepository();
         await repository.UpsertSyncOutboxMessageAsync(
@@ -164,7 +164,7 @@ public sealed class SyncOutboxTests
         await dispatcher.DispatchPendingAsync("GW-M16-01", [SyncOutboxTopics.RealtimeSnapshot], CancellationToken.None);
 
         using var json = JsonDocument.Parse(httpClient.PayloadJson!);
-        Assert.Equal(2, json.RootElement.GetProperty("schema_version").GetInt32());
+        Assert.Equal(3, json.RootElement.GetProperty("schema_version").GetInt32());
     }
 
     [Fact]

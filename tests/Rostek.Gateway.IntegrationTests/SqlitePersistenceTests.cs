@@ -51,6 +51,7 @@ public sealed class SqlitePersistenceTests
         Assert.Contains("machine_state_event", tableNames);
         Assert.Contains("production_metric", tableNames);
         Assert.Contains("sync_outbox", tableNames);
+        Assert.Contains("production_quantity_source_event", tableNames);
         Assert.DoesNotContain("product_metric", tableNames);
         Assert.DoesNotContain("downtime_event", tableNames);
         Assert.DoesNotContain("Machines", tableNames);

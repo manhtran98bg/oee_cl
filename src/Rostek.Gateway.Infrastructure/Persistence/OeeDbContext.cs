@@ -11,6 +11,7 @@ public sealed class OeeDbContext(DbContextOptions<OeeDbContext> options) : DbCon
     public DbSet<MachineStateEvent> MachineStateEvents => Set<MachineStateEvent>();
     public DbSet<SyncOutboxMessage> SyncOutboxMessages => Set<SyncOutboxMessage>();
     public DbSet<ProductionMetric> ProductionMetrics => Set<ProductionMetric>();
+    public DbSet<ProductionQuantitySourceEvent> ProductionQuantitySourceEvents => Set<ProductionQuantitySourceEvent>();
     public DbSet<ProductionSchedule> ProductionSchedules => Set<ProductionSchedule>();
     public DbSet<ProductionScheduleRun> ProductionScheduleRuns => Set<ProductionScheduleRun>();
     public DbSet<ProductionScheduleMachineRun> ProductionScheduleMachineRuns => Set<ProductionScheduleMachineRun>();
@@ -70,6 +71,28 @@ public sealed class OeeDbContext(DbContextOptions<OeeDbContext> options) : DbCon
             entity.HasIndex(context => new { context.Machine, context.OrderId })
                 .IsUnique()
                 .HasDatabaseName("ux_production_context_machine_order");
+        });
+
+        modelBuilder.Entity<ProductionQuantitySourceEvent>(entity =>
+        {
+            entity.ToTable("production_quantity_source_event");
+            entity.HasKey(item => item.EventCode);
+            entity.Property(item => item.EventCode).HasColumnName("event_code").HasMaxLength(150).IsRequired();
+            entity.Property(item => item.RequestHash).HasColumnName("request_hash").HasMaxLength(64).IsRequired();
+            entity.Property(item => item.GatewayId).HasColumnName("gateway_id").HasMaxLength(100).IsRequired();
+            entity.Property(item => item.RequestCreatedAt).HasColumnName("request_created_at").IsRequired();
+            entity.Property(item => item.Machine).HasColumnName("machine").HasMaxLength(100).IsRequired();
+            entity.Property(item => item.OrderId).HasColumnName("order_id").HasMaxLength(100).IsRequired();
+            entity.Property(item => item.SessionId).HasColumnName("session_id").HasMaxLength(100);
+            entity.Property(item => item.ProductCode).HasColumnName("product_code").HasMaxLength(100).IsRequired();
+            entity.Property(item => item.PreviousSource).HasColumnName("previous_source").HasMaxLength(20);
+            entity.Property(item => item.QuantityUpdateSource).HasColumnName("quantity_update_source").HasMaxLength(20).IsRequired();
+            entity.Property(item => item.Accepted).HasColumnName("accepted").IsRequired();
+            entity.Property(item => item.ErrorCode).HasColumnName("error_code").HasMaxLength(100);
+            entity.Property(item => item.ErrorMessage).HasColumnName("error_message");
+            entity.Property(item => item.ProcessedAt).HasColumnName("processed_at").IsRequired();
+            entity.HasIndex(item => new { item.Machine, item.OrderId, item.ProductCode, item.ProcessedAt })
+                .HasDatabaseName("ix_quantity_source_machine_order_product_time");
         });
 
         modelBuilder.Entity<ProductionPeriod>(entity =>

@@ -62,6 +62,7 @@ builder.Services.AddSingleton<IOrderQuantityCache, OrderQuantityCache>();
 builder.Services.AddSingleton<IRealtimeSnapshotSyncStatusStore, RealtimeSnapshotSyncStatusStore>();
 builder.Services.AddSingleton<ProductionMetricBuildSchedule>();
 builder.Services.AddScoped<IProductionCommandService, ProductionCommandService>();
+builder.Services.AddScoped<IProductionQuantitySourceService, ProductionQuantitySourceService>();
 builder.Services.AddSingleton(OeeProcessingGate.Shared);
 builder.Services.AddSingleton<ProductionScheduleGate>();
 builder.Services.AddSingleton(TimeProvider.System);
@@ -231,6 +232,25 @@ app.MapPost("/api/v1/gateway/oee/production-commands", async (ProductionCommandB
     }
 
     return Results.Ok(await commandService.HandleBatchAsync(request, cancellationToken));
+});
+
+app.MapPost("/api/v1/gateway/oee/production-quantity-sources", async (
+    ProductionQuantitySourceBatchRequest request,
+    IProductionQuantitySourceService quantitySourceService,
+    CancellationToken cancellationToken) =>
+{
+    if (request.SchemaVersion != 1 ||
+        request.Items is not { Count: 1 } ||
+        string.IsNullOrWhiteSpace(request.Items[0].EventCode))
+    {
+        return Results.BadRequest(new
+        {
+            accepted = false,
+            message = "schema_version must be 1, items must contain exactly one item, and event_code is required."
+        });
+    }
+
+    return Results.Ok(await quantitySourceService.HandleAsync(request, cancellationToken));
 });
 
 app.MapPost("/api/v1/mes/production-commands", async (ProductionCommandRequest request, IProductionCommandService commandService, CancellationToken cancellationToken) =>

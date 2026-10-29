@@ -86,6 +86,24 @@ public sealed class SyncOutboxMessage
     public long? SyncedAt { get; set; }
 }
 
+public sealed class ProductionQuantitySourceEvent
+{
+    public string EventCode { get; set; } = string.Empty;
+    public string RequestHash { get; set; } = string.Empty;
+    public string GatewayId { get; set; } = string.Empty;
+    public long RequestCreatedAt { get; set; }
+    public string Machine { get; set; } = string.Empty;
+    public string OrderId { get; set; } = string.Empty;
+    public string? SessionId { get; set; }
+    public string ProductCode { get; set; } = string.Empty;
+    public string? PreviousSource { get; set; }
+    public string QuantityUpdateSource { get; set; } = string.Empty;
+    public bool Accepted { get; set; }
+    public string? ErrorCode { get; set; }
+    public string? ErrorMessage { get; set; }
+    public long ProcessedAt { get; set; }
+}
+
 public sealed class ProductionMetric
 {
     public string MetricId { get; set; } = string.Empty;

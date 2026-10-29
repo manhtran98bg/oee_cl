@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using System.Text.Json;
 using Rostek.Gateway.Application.MesSync;
 using Rostek.Gateway.Application.Oee;
 using Rostek.Gateway.Domain.Entities;
@@ -139,6 +140,28 @@ public sealed class EfCoreOeeLocalRepository(OeeDbContext dbContext) : IOeeLocal
         }
 
         dbContext.ProductionContexts.Remove(context);
+        await dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    public Task<ProductionQuantitySourceEvent?> GetProductionQuantitySourceEventAsync(
+        string eventCode,
+        CancellationToken cancellationToken) =>
+        dbContext.ProductionQuantitySourceEvents
+            .AsNoTracking()
+            .FirstOrDefaultAsync(item => item.EventCode == eventCode, cancellationToken);
+
+    public async Task SaveProductionQuantitySourceEventAsync(
+        ProductionQuantitySourceEvent sourceEvent,
+        CancellationToken cancellationToken)
+    {
+        if (await dbContext.ProductionQuantitySourceEvents.AnyAsync(
+                item => item.EventCode == sourceEvent.EventCode,
+                cancellationToken))
+        {
+            return;
+        }
+
+        await dbContext.ProductionQuantitySourceEvents.AddAsync(sourceEvent, cancellationToken);
         await dbContext.SaveChangesAsync(cancellationToken);
     }
 
@@ -355,6 +378,28 @@ public sealed class EfCoreOeeLocalRepository(OeeDbContext dbContext) : IOeeLocal
             .ThenBy(metric => metric.SessionId)
             .ToListAsync(cancellationToken);
 
+    public async Task RemoveOpenProductionMetricsAsync(
+        string machine,
+        string orderId,
+        string sessionId,
+        CancellationToken cancellationToken)
+    {
+        var metrics = await dbContext.ProductionMetrics
+            .Where(metric =>
+                metric.Machine == machine &&
+                metric.OrderId == orderId &&
+                !metric.IsFinal &&
+                (metric.SessionId == sessionId || metric.BucketType == "order"))
+            .ToListAsync(cancellationToken);
+        if (metrics.Count == 0)
+        {
+            return;
+        }
+
+        dbContext.ProductionMetrics.RemoveRange(metrics);
+        await dbContext.SaveChangesAsync(cancellationToken);
+    }
+
     public Task<MachineStateEvent?> GetOpenMachineStateEventAsync(
         string machine,
         string orderId,
@@ -497,6 +542,32 @@ public sealed class EfCoreOeeLocalRepository(OeeDbContext dbContext) : IOeeLocal
         await dbContext.SaveChangesAsync(cancellationToken);
     }
 
+    public async Task RemovePendingQuantityOutboxMessagesAsync(
+        string machine,
+        string orderId,
+        string sessionId,
+        CancellationToken cancellationToken)
+    {
+        var candidates = await dbContext.SyncOutboxMessages
+            .Where(message =>
+                (message.Status == SyncOutboxStatuses.Pending || message.Status == SyncOutboxStatuses.Failed) &&
+                (message.Topic == SyncOutboxTopics.RealtimeSnapshot || message.Topic == SyncOutboxTopics.ProductionMetric))
+            .ToListAsync(cancellationToken);
+        var stale = candidates.Where(message =>
+            message.Topic == SyncOutboxTopics.RealtimeSnapshot
+                ? message.DedupeKey.Equals(
+                    $"realtime_snapshot:{machine}:{orderId}:{sessionId}",
+                    StringComparison.OrdinalIgnoreCase)
+                : PayloadMatchesOrder(message.PayloadJson, machine, orderId)).ToList();
+        if (stale.Count == 0)
+        {
+            return;
+        }
+
+        dbContext.SyncOutboxMessages.RemoveRange(stale);
+        await dbContext.SaveChangesAsync(cancellationToken);
+    }
+
     public async Task<IReadOnlyList<SyncOutboxMessage>> TakePendingSyncOutboxMessagesAsync(
         long now,
         int batchSize,
@@ -519,6 +590,23 @@ public sealed class EfCoreOeeLocalRepository(OeeDbContext dbContext) : IOeeLocal
             .ThenBy(item => item.Id)
             .Take(Math.Max(1, batchSize))
             .ToListAsync(cancellationToken);
+    }
+
+    private static bool PayloadMatchesOrder(string payloadJson, string machine, string orderId)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(payloadJson);
+            var root = document.RootElement;
+            return root.TryGetProperty("machine_code", out var machineElement) &&
+                root.TryGetProperty("order_id", out var orderElement) &&
+                string.Equals(machineElement.GetString(), machine, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(orderElement.GetString(), orderId, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     public async Task MarkSyncOutboxMessagesSucceededAsync(

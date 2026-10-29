@@ -7,6 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Rostek.Gateway.Application.Common;
 using Rostek.Gateway.Application.MesSync;
+using Rostek.Gateway.Application.Oee;
 using Rostek.Gateway.Application.Scheduling;
 using Rostek.Gateway.Domain.Entities;
 using Rostek.Gateway.Domain.Enums;
@@ -69,6 +70,7 @@ public sealed class DashboardEndpointTests
                             CommandCode = "CMD-001",
                             Action = "start",
                             OrderId = "MO-001",
+                            QuantityUpdateSource = QuantityUpdateSources.Oee,
                             Products =
                             [
                                 new ProductionCommandProduct

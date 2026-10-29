@@ -400,6 +400,7 @@ public sealed class ProductionScheduleTests
             var result = await _commands.HandleAsync(new ProductionCommandRequest
             {
                 CommandCode = Guid.NewGuid().ToString(), MachineCode = machine, Action = "start", ProductionOrderCode = order,
+                QuantityUpdateSource = QuantityUpdateSources.Oee,
                 OccurredAtUnixTimeSeconds = Clock.Unix - 100,
                 Products = [new() { ProductCode = "PRODUCT", MoldCode = "MOLD", Cavity = 2, CycleTime = 10, TargetQty = 100 }]
             }, default);
