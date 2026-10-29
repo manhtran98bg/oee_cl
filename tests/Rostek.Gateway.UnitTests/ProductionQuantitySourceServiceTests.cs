@@ -97,7 +97,7 @@ public sealed class ProductionQuantitySourceServiceTests
         var metrics = await metricBuilder.BuildAsync("GW-01", [raw], 120, CancellationToken.None);
 
         var item = Assert.Single(realtime.Payload.Items);
-        Assert.Equal(3, realtime.Payload.SchemaVersion);
+        Assert.Equal(2, realtime.Payload.SchemaVersion);
         Assert.Null(item.ActualQty);
         Assert.Null(item.TotalQty);
         Assert.Null(item.PlannedQty);

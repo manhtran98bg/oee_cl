@@ -241,7 +241,7 @@ Content-Type: application/json
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 2,
   "gateway_id": "GW-M16-01",
   "created_at": 1788750000,
   "items": [
@@ -269,7 +269,7 @@ Máy enabled nhưng chưa có production order vẫn được gửi để MES da
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 2,
   "gateway_id": "GW-M16-01",
   "created_at": 1788750000,
   "items": [
@@ -298,7 +298,7 @@ nhưng không gửi số liệu do Gateway tính:
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 2,
   "gateway_id": "GW-M16-01",
   "created_at": 1788750000,
   "items": [
@@ -326,7 +326,7 @@ nhưng không gửi số liệu do Gateway tính:
 
 | Field | Type | Required | Description |
 |---|---:|---:|---|
-| `schema_version` | integer | yes | Version realtime payload. Hiện tại là `3`. |
+| `schema_version` | integer | yes | Version realtime payload. Hiện tại là `2`. |
 | `gateway_id` | string | yes | Mã Gateway gửi dữ liệu. |
 | `created_at` | integer | yes | Unix seconds, thời điểm Gateway build payload. |
 | `items` | array | yes | Danh sách realtime snapshot. |

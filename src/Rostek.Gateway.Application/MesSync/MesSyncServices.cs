@@ -874,7 +874,7 @@ public sealed class RealtimeSnapshotBuilder(
         }
 
         return new RealtimeSnapshotBuildResult(
-            new RealtimeSnapshotBatchPayload(3, gatewayId, createdAt, items),
+            new RealtimeSnapshotBatchPayload(2, gatewayId, createdAt, items),
             rawIntervals.Count,
             skipped);
     }
@@ -1817,6 +1817,12 @@ public sealed class MesSyncOutboxDispatcher(
             try
             {
                 var payload = BuildBatchPayload(gatewayId, now, dispatchedMessages);
+                // logger.LogInformation("Payload {Payload}", payload);
+                logger.LogInformation(
+                    "MES sync outbox batch sent. Endpoint={Endpoint}, Items={ItemCount}, payload = {}",
+                    group.Key,
+                    dispatchedMessages.Length,
+                        payload);
                 await httpClient.SendAsync(group.Key, payload, cancellationToken);
                 await repository.MarkSyncOutboxMessagesSucceededAsync(dispatchedMessages, now, cancellationToken);
                 sent += dispatchedMessages.Length;
@@ -1858,7 +1864,7 @@ public sealed class MesSyncOutboxDispatcher(
         var payload = new JsonObject
         {
             ["schema_version"] = messageList.Any(message =>
-                message.Topic.Equals(SyncOutboxTopics.RealtimeSnapshot, StringComparison.OrdinalIgnoreCase)) ? 3 : 1,
+                message.Topic.Equals(SyncOutboxTopics.RealtimeSnapshot, StringComparison.OrdinalIgnoreCase)) ? 2 : 1,
             ["gateway_id"] = gatewayId,
             ["created_at"] = createdAt,
             ["items"] = items
