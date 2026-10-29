@@ -1817,12 +1817,6 @@ public sealed class MesSyncOutboxDispatcher(
             try
             {
                 var payload = BuildBatchPayload(gatewayId, now, dispatchedMessages);
-                // logger.LogInformation("Payload {Payload}", payload);
-                logger.LogInformation(
-                    "MES sync outbox batch sent. Endpoint={Endpoint}, Items={ItemCount}, payload = {}",
-                    group.Key,
-                    dispatchedMessages.Length,
-                        payload);
                 await httpClient.SendAsync(group.Key, payload, cancellationToken);
                 await repository.MarkSyncOutboxMessagesSucceededAsync(dispatchedMessages, now, cancellationToken);
                 sent += dispatchedMessages.Length;
