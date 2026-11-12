@@ -64,15 +64,36 @@ public sealed class ProductionCommandServiceTests
         await service.HandleBatchAsync(Batch(100, [StartItem("CMD-001", "M16-01", "MO-001", "SP-001", 16m)]), CancellationToken.None);
         await service.HandleBatchAsync(Batch(110, [CommandItem("CMD-002", "M16-01", "stop", "MO-001")]), CancellationToken.None);
 
-        var response = await service.HandleBatchAsync(Batch(120, [StartItem("CMD-003", "M16-01", "MO-001", "SP-001", 16m)]), CancellationToken.None);
+        var response = await service.HandleBatchAsync(Batch(120, [StartItem("CMD-003", "M16-01", "MO-001", "SP-001", 16m, QuantityUpdateSources.Oi)]), CancellationToken.None);
 
         Assert.True(response.Accepted);
         var context = Assert.Single(repository.Contexts);
         Assert.Equal("M16-01-MO-001-120", context.SessionId);
         Assert.Equal("active", context.Status);
+        using var productsJson = JsonDocument.Parse(context.ProductsJson);
+        Assert.Equal(QuantityUpdateSources.Oi, productsJson.RootElement[0].GetProperty("quantity_update_source").GetString());
         Assert.Contains(repository.Contexts, context => context.SessionId == "M16-01-MO-001-120" && context.Status == "active");
         Assert.Contains(repository.Periods, period => period.PeriodId == "M16-01-MO-001-100" && period.Status == "stopped");
         Assert.Contains(repository.Periods, period => period.PeriodId == "M16-01-MO-001-120" && period.Status == "active");
+    }
+
+    [Fact]
+    public async Task Start_active_session_cannot_change_quantity_update_source()
+    {
+        var repository = new InMemoryOeeLocalRepository();
+        var service = CreateService(repository);
+        await service.HandleBatchAsync(
+            Batch(100, [StartItem("CMD-001", "M16-01", "MO-001", "SP-001", 16m, QuantityUpdateSources.Oee)]),
+            CancellationToken.None);
+        var originalProductsJson = repository.Contexts.Single().ProductsJson;
+
+        var response = await service.HandleBatchAsync(
+            Batch(120, [StartItem("CMD-002", "M16-01", "MO-001", "SP-001", 16m, QuantityUpdateSources.Oi)]),
+            CancellationToken.None);
+
+        Assert.False(response.Accepted);
+        Assert.Contains("cannot be changed", Assert.Single(response.Items).Message, StringComparison.Ordinal);
+        Assert.Equal(originalProductsJson, repository.Contexts.Single().ProductsJson);
     }
 
     [Fact]

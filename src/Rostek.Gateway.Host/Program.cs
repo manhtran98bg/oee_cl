@@ -234,25 +234,6 @@ app.MapPost("/api/v1/gateway/oee/production-commands", async (ProductionCommandB
     return Results.Ok(await commandService.HandleBatchAsync(request, cancellationToken));
 });
 
-app.MapPost("/api/v1/gateway/oee/production-quantity-sources", async (
-    ProductionQuantitySourceBatchRequest request,
-    IProductionQuantitySourceService quantitySourceService,
-    CancellationToken cancellationToken) =>
-{
-    if (request.SchemaVersion != 1 ||
-        request.Items is not { Count: 1 } ||
-        string.IsNullOrWhiteSpace(request.Items[0].EventCode))
-    {
-        return Results.BadRequest(new
-        {
-            accepted = false,
-            message = "schema_version must be 1, items must contain exactly one item, and event_code is required."
-        });
-    }
-
-    return Results.Ok(await quantitySourceService.HandleAsync(request, cancellationToken));
-});
-
 app.MapPost("/api/v1/mes/production-commands", async (ProductionCommandRequest request, IProductionCommandService commandService, CancellationToken cancellationToken) =>
 {
     var response = await commandService.HandleAsync(request, cancellationToken);

@@ -104,6 +104,29 @@ public sealed class DashboardEndpointTests
     }
 
     [Fact]
+    public async Task Production_quantity_source_endpoint_is_not_exposed()
+    {
+        var previousGatewayHome = Environment.GetEnvironmentVariable("ROSTEK_GATEWAY_HOME");
+        Environment.SetEnvironmentVariable("ROSTEK_GATEWAY_HOME", CreateTempGatewayHome());
+
+        try
+        {
+            await using var factory = new WebApplicationFactory<Program>();
+            using var client = factory.CreateClient();
+
+            var response = await client.PostAsJsonAsync(
+                "/api/v1/gateway/oee/production-quantity-sources",
+                new { schema_version = 1, items = Array.Empty<object>() });
+
+            Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("ROSTEK_GATEWAY_HOME", previousGatewayHome);
+        }
+    }
+
+    [Fact]
     public async Task Mes_equipment_endpoint_returns_molding_machine_catalog()
     {
         var previousGatewayHome = Environment.GetEnvironmentVariable("ROSTEK_GATEWAY_HOME");

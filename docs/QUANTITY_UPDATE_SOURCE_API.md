@@ -1,5 +1,9 @@
 # Quantity Update Source API
 
+> **Tạm ngừng:** Gateway hiện không expose endpoint đổi nguồn. Request tới
+> `/api/v1/gateway/oee/production-quantity-sources` trả `404 Not Found`.
+> Phần schema bên dưới được giữ lại để phục vụ việc khôi phục API sau này.
+
 ## Mục đích
 
 API này đồng bộ nguồn cập nhật sản lượng của một lệnh sản xuất từ MES/Odoo xuống
@@ -13,9 +17,9 @@ Nguồn cập nhật sản lượng có hai giá trị:
 
 ## Khi nào MES gọi API
 
-MES gọi API khi người dùng thay đổi trường `quantity_update_source` trên form
-lệnh sản xuất Odoo. API này **không** được gọi khi người dùng đổi trạng thái
-lệnh từ giao diện OI.
+Trong thời gian endpoint bị tắt, MES không gọi API khi người dùng thay đổi
+`quantity_update_source`. Nguồn chỉ được chọn khi bắt đầu một session mới bằng
+`production-commands`.
 
 Luồng đổi trạng thái OI vẫn dùng endpoint `production-commands` hiện có.
 Command `start` bắt buộc có field `quantity_update_source` ở cấp command item.

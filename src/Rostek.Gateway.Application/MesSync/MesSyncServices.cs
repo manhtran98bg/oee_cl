@@ -203,7 +203,7 @@ public sealed class ProductionCommandService(
                 request.Products!.Any(input => input.ProductCode.Equals(product.ProductId, StringComparison.OrdinalIgnoreCase)) &&
                 !NormalizeSource(product.QuantityUpdateSource).Equals(quantityUpdateSource, StringComparison.OrdinalIgnoreCase)))
         {
-            return Reject(machine, request.CommandCode, orderId, context.SessionId, "quantity_update_source differs from the active session; use production-quantity-sources to change it.");
+            return Reject(machine, request.CommandCode, orderId, context.SessionId, "quantity_update_source cannot be changed for an active session.");
         }
 
         context.ProductsJson = JsonSerializer.Serialize(
