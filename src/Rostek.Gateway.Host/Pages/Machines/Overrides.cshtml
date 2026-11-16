@@ -4,7 +4,7 @@
     ViewData["Title"] = "Signal Overrides";
 }
 <h1 class="h3">Signal Overrides</h1>
-@if (!Model.TemplateSignals.Any())
+@if (!Model.Signals.Any())
 {
     <div class="alert alert-warning">
         This machine's template does not have any signals yet.
@@ -12,19 +12,19 @@
     </div>
 }
 <table class="table table-sm table-striped">
-    <thead><tr><th>Signal</th><th>Template Address</th><th>Type</th><th>Required</th><th>Enabled</th><th></th></tr></thead>
+    <thead><tr><th>Signal</th><th>Current Address</th><th>Type</th><th>Required</th><th>Enabled</th><th></th></tr></thead>
     <tbody>
-    @foreach (var signal in Model.TemplateSignals)
+    @foreach (var signal in Model.Signals)
     {
         <tr>
             <td>@signal.SignalCode</td>
-            <td>@signal.SourceAddress</td>
+            <td>@signal.CurrentSourceAddress</td>
             <td>@signal.DataType</td>
             <td>@signal.Required</td>
             <td>@signal.Enabled</td>
             <td>
                 <form method="post" asp-page-handler="Reset" class="d-inline">
-                    <input type="hidden" name="templateSignalId" value="@signal.Id" />
+                    <input type="hidden" name="templateSignalId" value="@signal.TemplateSignalId" />
                     <button class="btn btn-link btn-sm" type="submit">Reset</button>
                 </form>
             </td>

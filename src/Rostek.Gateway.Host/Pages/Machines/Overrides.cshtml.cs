@@ -2,13 +2,12 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.AspNetCore.Mvc.Rendering;
 using Rostek.Gateway.Application.Machines;
-using Rostek.Gateway.Application.MachineTemplates;
 
 namespace Rostek.Gateway.Host.Pages.Machines;
 
-public sealed class OverridesModel(IMachineService machineService, IMachineTemplateService templateService, ISignalOverrideService overrideService) : PageModel
+public sealed class OverridesModel(IMachineService machineService, ISignalOverrideService overrideService) : PageModel
 {
-    public IReadOnlyList<TemplateSignalListItem> TemplateSignals { get; private set; } = [];
+    public IReadOnlyList<SignalOverrideListItem> Signals { get; private set; } = [];
     public List<SelectListItem> SignalOptions { get; private set; } = [];
     public Guid TemplateId { get; private set; }
 
@@ -59,7 +58,7 @@ public sealed class OverridesModel(IMachineService machineService, IMachineTempl
     {
         TemplateId = templateId;
         Input.MachineId = machineId;
-        TemplateSignals = await templateService.ListSignalsAsync(templateId, cancellationToken);
-        SignalOptions = TemplateSignals.Select(signal => new SelectListItem(signal.SignalCode, signal.Id.ToString())).ToList();
+        Signals = await overrideService.ListAsync(machineId, cancellationToken);
+        SignalOptions = Signals.Select(signal => new SelectListItem(signal.SignalCode, signal.TemplateSignalId.ToString())).ToList();
     }
 }

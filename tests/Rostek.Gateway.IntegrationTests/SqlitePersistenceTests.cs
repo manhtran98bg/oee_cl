@@ -410,6 +410,72 @@ public sealed class SqlitePersistenceTests
         Assert.Equal(machine.Id.ToString(), audit.EntityId);
     }
 
+    [Fact]
+    public async Task Machine_service_toggles_enabled_state_in_draft_configuration()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        await using var db = CreateContext(connection);
+        await db.Database.EnsureCreatedAsync();
+        var repository = new EfCoreConfigRepository(db);
+        var service = new MachineService(
+            repository,
+            new GatewayConfigurationBuilder(repository),
+            NullLogger<MachineService>.Instance);
+        var template = new MachineTemplate { Code = "TPL-MODBUS", Name = "Template Modbus", Protocol = GatewayProtocol.ModbusTcp };
+        var machine = new Machine { Code = "2-10", Name = "Machine 2-10", TemplateId = template.Id, Enabled = true };
+        await db.MachineTemplates.AddAsync(template);
+        await db.Machines.AddAsync(machine);
+        await db.SaveChangesAsync();
+
+        var result = await service.SetEnabledAsync(machine.Id, false, "tester", CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.False((await db.Machines.SingleAsync()).Enabled);
+
+        result = await service.SetEnabledAsync(machine.Id, true, "tester", CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.True((await db.Machines.SingleAsync()).Enabled);
+        var audits = await db.AuditLogs.ToListAsync();
+        Assert.Equal(2, audits.Count);
+        Assert.Contains(audits, audit => audit.Action == "Disable machine");
+        Assert.Contains(audits, audit => audit.Action == "Enable machine");
+        Assert.All(audits, audit => Assert.Equal(machine.Id.ToString(), audit.EntityId));
+    }
+
+    [Fact]
+    public async Task Machine_service_enables_and_disables_all_machines_in_draft_configuration()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        await using var db = CreateContext(connection);
+        await db.Database.EnsureCreatedAsync();
+        var repository = new EfCoreConfigRepository(db);
+        var service = new MachineService(
+            repository,
+            new GatewayConfigurationBuilder(repository),
+            NullLogger<MachineService>.Instance);
+        var template = new MachineTemplate { Code = "TPL-MODBUS", Name = "Template Modbus", Protocol = GatewayProtocol.ModbusTcp };
+        db.MachineTemplates.Add(template);
+        db.Machines.AddRange(
+            new Machine { Code = "2-10", Name = "Machine 2-10", TemplateId = template.Id, Enabled = true },
+            new Machine { Code = "2-11", Name = "Machine 2-11", TemplateId = template.Id, Enabled = false });
+        await db.SaveChangesAsync();
+
+        var disableResult = await service.SetAllEnabledAsync(false, "tester", CancellationToken.None);
+
+        Assert.True(disableResult.Succeeded);
+        Assert.All(await db.Machines.ToListAsync(), machine => Assert.False(machine.Enabled));
+        Assert.Single(await db.AuditLogs.ToListAsync());
+
+        var enableResult = await service.SetAllEnabledAsync(true, "tester", CancellationToken.None);
+
+        Assert.True(enableResult.Succeeded);
+        Assert.All(await db.Machines.ToListAsync(), machine => Assert.True(machine.Enabled));
+        Assert.Equal(3, await db.AuditLogs.CountAsync());
+    }
+
     private static GatewayDbContext CreateContext(SqliteConnection connection)
     {
         var options = new DbContextOptionsBuilder<GatewayDbContext>().UseSqlite(connection).Options;

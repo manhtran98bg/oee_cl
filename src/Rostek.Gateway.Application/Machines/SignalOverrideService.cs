@@ -7,6 +7,34 @@ namespace Rostek.Gateway.Application.Machines;
 
 public sealed class SignalOverrideService(IConfigRepository repository, ILogger<SignalOverrideService> logger) : ISignalOverrideService
 {
+    public async Task<IReadOnlyList<SignalOverrideListItem>> ListAsync(Guid machineId, CancellationToken cancellationToken)
+    {
+        var machine = await repository.GetMachineAsync(machineId, includeDetails: true, cancellationToken);
+        if (machine?.Template is null)
+        {
+            return [];
+        }
+
+        var overrides = machine.SignalOverrides.ToDictionary(item => item.TemplateSignalId);
+        return machine.Template.Signals
+            .OrderBy(signal => signal.DisplayOrder)
+            .ThenBy(signal => signal.SignalCode)
+            .Select(signal =>
+            {
+                overrides.TryGetValue(signal.Id, out var signalOverride);
+                return new SignalOverrideListItem(
+                    signal.Id,
+                    signal.SignalCode,
+                    string.IsNullOrWhiteSpace(signalOverride?.SourceAddress)
+                        ? signal.SourceAddress
+                        : signalOverride.SourceAddress,
+                    signalOverride?.DataType ?? signal.DataType,
+                    signal.Required,
+                    signalOverride?.Enabled ?? signal.Enabled);
+            })
+            .ToList();
+    }
+
     public async Task<GatewayResult> SaveAsync(SignalOverrideInput input, string? userName, CancellationToken cancellationToken)
     {
         var machine = await repository.GetMachineAsync(input.MachineId, includeDetails: true, cancellationToken);

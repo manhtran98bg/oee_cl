@@ -12,12 +12,14 @@ public interface IMachineService
     Task<GatewayResult<Guid>> SaveAsync(MachineEditInput input, string? userName, CancellationToken cancellationToken);
     Task<GatewayResult<Guid>> CloneAsync(Guid id, string newCode, string? userName, CancellationToken cancellationToken);
     Task<GatewayResult> SetEnabledAsync(Guid id, bool enabled, string? userName, CancellationToken cancellationToken);
+    Task<GatewayResult> SetAllEnabledAsync(bool enabled, string? userName, CancellationToken cancellationToken);
     Task<GatewayResult> DeleteAsync(Guid id, string? userName, CancellationToken cancellationToken);
     Task<RuntimeConfiguration?> PreviewEffectiveAsync(Guid machineId, CancellationToken cancellationToken);
 }
 
 public interface ISignalOverrideService
 {
+    Task<IReadOnlyList<SignalOverrideListItem>> ListAsync(Guid machineId, CancellationToken cancellationToken);
     Task<GatewayResult> SaveAsync(SignalOverrideInput input, string? userName, CancellationToken cancellationToken);
     Task<GatewayResult> ResetAsync(Guid machineId, Guid templateSignalId, string? userName, CancellationToken cancellationToken);
 }
@@ -101,3 +103,11 @@ public sealed class SignalOverrideInput
     public string? ValueMappingJson { get; set; }
     public string? OptionsJson { get; set; }
 }
+
+public sealed record SignalOverrideListItem(
+    Guid TemplateSignalId,
+    string SignalCode,
+    string CurrentSourceAddress,
+    SignalDataType DataType,
+    bool Required,
+    bool Enabled);

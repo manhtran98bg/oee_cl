@@ -136,6 +136,9 @@ public sealed class DashboardServiceTests
         public Task<GatewayResult> SetEnabledAsync(Guid id, bool enabled, string? userName, CancellationToken cancellationToken) =>
             Task.FromResult(GatewayResult.Ok());
 
+        public Task<GatewayResult> SetAllEnabledAsync(bool enabled, string? userName, CancellationToken cancellationToken) =>
+            Task.FromResult(GatewayResult.Ok());
+
         public Task<GatewayResult> DeleteAsync(Guid id, string? userName, CancellationToken cancellationToken) =>
             Task.FromResult(GatewayResult.Ok());
 

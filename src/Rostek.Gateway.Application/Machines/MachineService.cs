@@ -258,6 +258,38 @@ public sealed class MachineService(
         return GatewayResult.Ok();
     }
 
+    public async Task<GatewayResult> SetAllEnabledAsync(bool enabled, string? userName, CancellationToken cancellationToken)
+    {
+        var machines = await repository.ListAllMachinesAsync(cancellationToken);
+        var changedMachines = machines.Where(machine => machine.Enabled != enabled).ToList();
+        if (changedMachines.Count == 0)
+        {
+            return GatewayResult.Ok();
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        foreach (var machine in changedMachines)
+        {
+            machine.Enabled = enabled;
+            machine.UpdatedAtUtc = now;
+            await repository.AddAuditLogAsync(new AuditLog
+            {
+                UserName = userName,
+                Action = enabled ? "Enable machine" : "Disable machine",
+                EntityType = nameof(Machine),
+                EntityId = machine.Id.ToString(),
+                CreatedAtUtc = now
+            }, cancellationToken);
+        }
+
+        await repository.SaveChangesAsync(cancellationToken);
+        logger.LogInformation(
+            "Set all machines enabled state to {Enabled}. ChangedCount={ChangedCount}",
+            enabled,
+            changedMachines.Count);
+        return GatewayResult.Ok();
+    }
+
     public async Task<GatewayResult> DeleteAsync(Guid id, string? userName, CancellationToken cancellationToken)
     {
         var machine = await repository.GetMachineAsync(id, includeDetails: true, cancellationToken);
