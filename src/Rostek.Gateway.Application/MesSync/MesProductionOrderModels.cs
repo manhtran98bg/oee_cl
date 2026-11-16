@@ -169,8 +169,8 @@ public sealed class MesProductionOrderService(
                 .Select(NormalizeOrder)
                 .Where(order => order.ProductionStatus.Equals(ProducingStatus, StringComparison.OrdinalIgnoreCase))
                 .DistinctBy(order => $"{order.MachineCode}|{order.OrderId}", StringComparer.OrdinalIgnoreCase)
-                .OrderBy(order => order.MachineCode, StringComparer.OrdinalIgnoreCase)
-                .ThenBy(order => order.OrderId, StringComparer.OrdinalIgnoreCase)
+                .OrderBy(order => order.MachineCode, NaturalCodeComparer.Instance)
+                .ThenBy(order => order.OrderId, NaturalCodeComparer.Instance)
                 .ToList();
 
             var snapshot = new MesProductionOrderSnapshot(

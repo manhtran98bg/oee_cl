@@ -1,4 +1,5 @@
 using System.Globalization;
+using Rostek.Gateway.Application.Common;
 using Rostek.Gateway.Application.Machines;
 using Rostek.Gateway.Application.Ports;
 using Rostek.Gateway.Contracts.Machines;
@@ -19,7 +20,7 @@ public sealed class DashboardService(
         var snapshots = valueReader.GetSnapshots().ToDictionary(snapshot => snapshot.MachineCode, StringComparer.OrdinalIgnoreCase);
 
         var rows = machines.Items
-            .OrderBy(machine => machine.Code, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(machine => machine.Code, NaturalCodeComparer.Instance)
             .Select(machine =>
             {
                 statuses.TryGetValue(machine.Code, out var status);

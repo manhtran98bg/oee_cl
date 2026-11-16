@@ -16,7 +16,10 @@ public sealed class MachineService(
     public async Task<MachineListResult> ListAsync(MachineQuery query, CancellationToken cancellationToken)
     {
         var machines = await repository.ListMachinesAsync(query, cancellationToken);
-        var items = machines.Select(machine => new MachineListItem(
+        var items = machines
+            .OrderBy(machine => machine.DisplayOrder)
+            .ThenBy(machine => machine.Code, NaturalCodeComparer.Instance)
+            .Select(machine => new MachineListItem(
             machine.Id,
             machine.Code,
             machine.Name,

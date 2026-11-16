@@ -44,7 +44,7 @@ public sealed class MesEquipmentCatalogService(
             var items = machines
                 .Select(ToListItem)
                 .OrderByDescending(machine => machine.CanImport)
-                .ThenBy(machine => machine.Code, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(machine => machine.Code, NaturalCodeComparer.Instance)
                 .ThenBy(machine => machine.Name, StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
