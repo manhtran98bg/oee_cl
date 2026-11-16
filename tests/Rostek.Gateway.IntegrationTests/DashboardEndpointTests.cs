@@ -160,6 +160,39 @@ public sealed class DashboardEndpointTests
     }
 
     [Fact]
+    public async Task Mes_production_order_endpoint_refreshes_producing_orders()
+    {
+        var previousGatewayHome = Environment.GetEnvironmentVariable("ROSTEK_GATEWAY_HOME");
+        Environment.SetEnvironmentVariable("ROSTEK_GATEWAY_HOME", CreateTempGatewayHome());
+
+        try
+        {
+            await using var factory = new WebApplicationFactory<Program>()
+                .WithWebHostBuilder(builder =>
+                {
+                    builder.ConfigureServices(services =>
+                    {
+                        services.RemoveAll<IMesProductionOrderClient>();
+                        services.AddScoped<IMesProductionOrderClient, StubMesProductionOrderClient>();
+                    });
+                });
+            using var client = factory.CreateClient();
+
+            var response = await client.GetAsync("/api/v1/mes/production-orders");
+            var json = await response.Content.ReadAsStringAsync();
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Contains("\"order_id\":\"ORDER-001\"", json);
+            Assert.Contains("\"machine_code\":\"M16-01\"", json);
+            Assert.Contains("\"production_status\":\"producing\"", json);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("ROSTEK_GATEWAY_HOME", previousGatewayHome);
+        }
+    }
+
+    [Fact]
     public async Task Schedule_pages_save_multiple_machines_validate_empty_weekdays_and_require_antiforgery()
     {
         var previousGatewayHome = Environment.GetEnvironmentVariable("ROSTEK_GATEWAY_HOME");
@@ -258,5 +291,23 @@ public sealed class DashboardEndpointTests
             [
                 new MesMoldingMachineListItem("1-1", "Machine 1-1", "J350", "SN-1", "JSW", "1", true, null)
             ]));
+    }
+
+    private sealed class StubMesProductionOrderClient : IMesProductionOrderClient
+    {
+        public Task<MesProductionOrderPageDto> FetchPageAsync(int page, string productionStatus, CancellationToken cancellationToken) =>
+            Task.FromResult(new MesProductionOrderPageDto(
+                1,
+                "GW-M16-01",
+                DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                new MesProductionOrderPaginationDto(1, 100, 1, 1, null),
+                [
+                    new MesProductionOrderDto(
+                        "ORDER-001",
+                        "M16-01",
+                        "oee",
+                        "producing",
+                        [new MesProductionOrderProductDto("SP-001", "MOLD-001", 4, 16, 1000)])
+                ]));
     }
 }

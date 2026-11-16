@@ -79,6 +79,8 @@ builder.Services.AddScoped<IProductionScheduleRunner>(services => new Production
     services.GetRequiredService<Microsoft.Extensions.Options.IOptions<GatewayOptions>>().Value.GatewayId));
 builder.Services.AddHostedService<ProductionScheduleHostedService>();
 builder.Services.AddScoped<IMesEquipmentCatalogService, MesEquipmentCatalogService>();
+builder.Services.AddSingleton<IMesProductionOrderCache, MesProductionOrderCache>();
+builder.Services.AddScoped<IMesProductionOrderService, MesProductionOrderService>();
 builder.Services.AddHostedService<MesSyncHostedService>();
 builder.Services.AddHostedService<MesSyncOutboxHostedService>();
 
@@ -212,6 +214,14 @@ app.MapGet("/api/v1/mes/equipment/molding-machines", async (IMesEquipmentCatalog
 {
     var result = await catalogService.FetchMoldingMachinesAsync(cancellationToken);
     return result.Succeeded ? Results.Ok(new { items = result.Value }) : Results.Problem(result.ErrorMessage, statusCode: StatusCodes.Status502BadGateway);
+});
+
+app.MapGet("/api/v1/mes/production-orders", async (IMesProductionOrderService orderService, CancellationToken cancellationToken) =>
+{
+    var result = await orderService.RefreshAsync(cancellationToken);
+    return result.Succeeded
+        ? Results.Ok(result.Value)
+        : Results.Problem(result.ErrorMessage, statusCode: StatusCodes.Status502BadGateway);
 });
 
 app.MapPost("/api/v1/gateway/oee/production-commands", async (ProductionCommandBatchRequest request, IProductionCommandService commandService, CancellationToken cancellationToken) =>

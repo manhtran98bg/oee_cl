@@ -27,6 +27,7 @@ public static class DependencyInjection
         services.AddScoped<IRealtimeSnapshotClient, HttpRealtimeSnapshotClient>();
         services.AddScoped<ISyncOutboxHttpClient, HttpSyncOutboxClient>();
         services.AddScoped<IMesEquipmentCatalogClient, HttpMesEquipmentCatalogClient>();
+        services.AddScoped<IMesProductionOrderClient, HttpMesProductionOrderClient>();
         return services;
     }
 }

@@ -6,6 +6,7 @@
 <h1 class="h3">Machine</h1>
 <form method="post" class="row g-3">
     <input asp-for="Input.Id" type="hidden" />
+    <input asp-for="SelectedFromMes" type="hidden" />
     <div class="col-12">
         <button class="btn btn-outline-primary" type="button" id="fetchMesMachinesButton">Fetch from MES</button>
         <span class="small text-muted ms-2" id="mesMachineFetchStatus"></span>
@@ -28,6 +29,7 @@
                         <th>Serial</th>
                         <th>Manufacturer</th>
                         <th>Location</th>
+                        <th>Producing Orders</th>
                         <th></th>
                     </tr>
                     </thead>
@@ -88,6 +90,56 @@
         <a class="btn btn-secondary" asp-page="Index">Cancel</a>
     </div>
 </form>
+@if (Model.OfferedOrders.Count > 0)
+{
+    var canCreateAny = Model.OfferedOrders.Any(order => order.CanCreateSession);
+    <div class="modal fade" id="mesOrdersModal" tabindex="-1" aria-labelledby="mesOrdersModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2 class="modal-title fs-5" id="mesOrdersModalLabel">Producing orders for @Model.Input.Code</h2>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <form method="post" asp-page-handler="CreateSessions">
+                    <div class="modal-body">
+                        <input type="hidden" name="machineCode" value="@Model.Input.Code" />
+                        <p class="text-muted">
+                            The machine draft was saved. Validate and Apply the configuration before creating OEE sessions.
+                        </p>
+                        <div class="list-group">
+                            @foreach (var order in Model.OfferedOrders)
+                            {
+                                var product = order.Products.FirstOrDefault();
+                                <label class="list-group-item d-flex gap-3">
+                                    <input class="form-check-input flex-shrink-0" type="checkbox" name="orderIds" value="@order.OrderId"
+                                           checked="@order.CanCreateSession" disabled="@(!order.CanCreateSession)" />
+                                    <span>
+                                        <strong>@order.OrderId</strong>
+                                        <span class="badge text-bg-success ms-1">producing</span>
+                                        <span class="badge text-bg-secondary">@order.QuantityUpdateSource.ToUpperInvariant()</span>
+                                        <span class="d-block small mt-1">
+                                            Product: @(product?.ProductCode ?? "-") / Mold: @(product?.MoldCode ?? "-") /
+                                            Cavity: @(product?.Cavity.ToString() ?? "-") / Cycle: @(product?.CycleTime.ToString() ?? "-") s
+                                        </span>
+                                        @if (!string.IsNullOrWhiteSpace(order.Message))
+                                        {
+                                            <span class="d-block small text-warning">@order.Message</span>
+                                        }
+                                    </span>
+                                </label>
+                            }
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <a class="btn btn-outline-primary" asp-page="/Configuration/Index">Go to Validate / Apply</a>
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                        <button type="submit" class="btn btn-primary" disabled="@(!canCreateAny)">Create Selected Sessions</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+}
 @if (Model.EffectiveJson is not null)
 {
     <h2 class="h5 mt-4">Effective Configuration Preview</h2>
@@ -111,6 +163,7 @@
             const modbusFields = document.getElementById('modbusConnectionFields');
             const net100Fields = document.getElementById('net100ConnectionFields');
             let machines = [];
+            let orders = [];
 
             if (fetchButton && isEditMode) {
                 fetchButton.textContent = 'Refresh from MES';
@@ -120,20 +173,34 @@
                 status.textContent = 'Fetching...';
                 fetchButton.disabled = true;
                 try {
-                    const response = await fetch('/api/v1/mes/equipment/molding-machines', {
-                        headers: { 'Accept': 'application/json' }
-                    });
-                    if (!response.ok) {
-                        throw new Error(`HTTP ${response.status}`);
+                    const [machinesResult, ordersResult] = await Promise.allSettled([
+                        fetch('/api/v1/mes/equipment/molding-machines', { headers: { 'Accept': 'application/json' } }),
+                        fetch('/api/v1/mes/production-orders', { headers: { 'Accept': 'application/json' } })
+                    ]);
+
+                    if (machinesResult.status !== 'fulfilled' || !machinesResult.value.ok) {
+                        const statusCode = machinesResult.status === 'fulfilled' ? machinesResult.value.status : machinesResult.reason?.message;
+                        throw new Error(`Machine catalog HTTP ${statusCode}`);
                     }
 
-                    const payload = await response.json();
-                    machines = payload.items ?? [];
+                    const machinePayload = await machinesResult.value.json();
+                    machines = machinePayload.items ?? [];
+                    let ordersMessage = '';
+                    if (ordersResult.status === 'fulfilled' && ordersResult.value.ok) {
+                        const orderPayload = await ordersResult.value.json();
+                        orders = orderPayload.items ?? [];
+                    } else {
+                        orders = [];
+                        const statusCode = ordersResult.status === 'fulfilled' ? ordersResult.value.status : ordersResult.reason?.message;
+                        ordersMessage = `; orders unavailable (${statusCode})`;
+                    }
+
                     if (isEditMode) {
                         refreshCurrentMachineFromMes();
+                        status.textContent += ordersMessage;
                     } else {
                         picker.classList.remove('d-none');
-                        status.textContent = 'MES machines loaded';
+                        status.textContent = `MES machines loaded${ordersMessage}`;
                         renderMachines();
                     }
                 } catch (error) {
@@ -206,6 +273,11 @@
                 addCell(tr, machine.serial);
                 addCell(tr, machine.manufacturer);
                 addCell(tr, machine.location);
+                const machineOrders = orders.filter(order =>
+                    (order.machine_code ?? '').trim().toLowerCase() === (machine.code ?? '').trim().toLowerCase());
+                addCell(tr, machineOrders.length === 0
+                    ? '-'
+                    : machineOrders.map(order => order.order_id).join(', '));
 
                 const action = document.createElement('td');
                 action.className = 'text-end';
@@ -233,6 +305,7 @@
                 setValue('Input_Serial', machine.serial);
                 setValue('Input_Manufacturer', machine.manufacturer);
                 setValue('Input_Location', machine.location);
+                setValue('SelectedFromMes', 'true');
                 status.textContent = `Picked ${machine.code}`;
             }
 
@@ -241,6 +314,11 @@
                 if (input) {
                     input.value = value ?? '';
                 }
+            }
+
+            const modalElement = document.getElementById('mesOrdersModal');
+            if (modalElement && window.bootstrap) {
+                bootstrap.Modal.getOrCreateInstance(modalElement).show();
             }
         })();
     </script>
