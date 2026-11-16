@@ -968,13 +968,13 @@ public sealed class RealtimeSnapshotBuilder(
             product.ProductId,
             product.MoldCode,
             state,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
             EmptyExtra());
 
     private static RealtimeSnapshotItemPayload CreateNoContextItem(string machineCode, string state) =>

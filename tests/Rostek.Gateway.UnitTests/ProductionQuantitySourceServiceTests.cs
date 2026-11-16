@@ -98,13 +98,13 @@ public sealed class ProductionQuantitySourceServiceTests
 
         var item = Assert.Single(realtime.Payload.Items);
         Assert.Equal(2, realtime.Payload.SchemaVersion);
-        Assert.Null(item.ActualQty);
-        Assert.Null(item.TotalQty);
-        Assert.Null(item.PlannedQty);
-        Assert.Null(item.Availability);
-        Assert.Null(item.Performance);
-        Assert.Null(item.Quality);
-        Assert.Null(item.Oee);
+        Assert.Equal(0, item.ActualQty);
+        Assert.Equal(0, item.TotalQty);
+        Assert.Equal(0, item.PlannedQty);
+        Assert.Equal(0, item.Availability);
+        Assert.Equal(0, item.Performance);
+        Assert.Equal(0, item.Quality);
+        Assert.Equal(0, item.Oee);
         Assert.Empty(metrics.Metrics);
         Assert.Empty(repository.ProductionMetrics);
     }
